@@ -37,3 +37,48 @@ test('installer refuses unrelated files and keeps an existing runtime on downloa
   assert.equal(readlinkSync(join(bin, 'blip')), join(home, 'old/blip.mjs'));
   assert.deepEqual(readdirSync(join(home, '.local/lib')), ['blip-cli']);
 });
+
+test('installer activates a staged runtime and restores it if activation fails or is terminated', { skip: process.platform !== 'linux', timeout: 15000 }, (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'blip-activate-'));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const mocks = join(home, 'mocks'), root = join(home, 'archive'), member = join(root, 'blip-1.2.6/lib/runtime/lib');
+  mkdirSync(mocks); mkdirSync(member, { recursive: true });
+  writeFileSync(join(home, 'fake.c'), 'void libblip_host(int a, const char*b, const char*c, const char*d, const char*e) {}\nvoid libblip_host_stop(void) {}\n');
+  execFileSync('cc', ['-shared', '-fPIC', join(home, 'fake.c'), '-o', join(member, 'libblip-jni.so')]);
+  const archive = join(home, 'fixture.tar.gz');
+  execFileSync('tar', ['-czf', archive, '-C', root, 'blip-1.2.6']);
+  // The fixture substitutes only the authenticated download boundary. Real
+  // sha256sum rejection is exercised above and the official archive is checked
+  // in the real Linux install smoke test.
+  writeFileSync(join(mocks, 'curl'), '#!/bin/sh\nwhile [ "$1" != "--output" ]; do shift; done\ncp "$BLIP_TEST_ARCHIVE" "$2"\n', { mode: 0o700 });
+  writeFileSync(join(mocks, 'sha256sum'), '#!/bin/sh\ncat >/dev/null\nexit 0\n', { mode: 0o700 });
+  const runtime = join(home, '.local/lib/blip-cli'), link = join(home, '.local/bin/blip');
+  const env = { PATH: `${mocks}:${process.env.PATH}`, HOME: home, BLIP_TEST_ARCHIVE: archive };
+  const run = () => spawnSync('bash', [installer], { env, encoding: 'utf8' });
+  const installed = run();
+  assert.equal(installed.status, 0, installed.stderr);
+  assert.equal(readFileSync(join(runtime, '.blip-cli-install'), 'utf8'), '1.2.6\n');
+  assert.equal(existsSync(join(runtime, 'blip-core')), true);
+  assert.equal(existsSync(join(runtime, 'libblip.so')), true);
+  assert.equal(readlinkSync(link), fileURLToPath(new URL('../blip.mjs', import.meta.url)));
+  assert.deepEqual(readdirSync(runtime).sort(), ['.blip-cli-install', 'blip-core', 'libblip.so']);
+  writeFileSync(join(runtime, 'keep'), 'old runtime');
+  const oldTarget = join(home, 'old/blip.mjs');
+  rmSync(link); symlinkSync(oldTarget, link);
+  for (const failure of ['exit 11', 'kill -TERM "$PPID"; exit 143']) {
+    // Fail exactly the final link rename, after the runtime directory switch.
+    writeFileSync(join(mocks, 'mv'), `#!/bin/sh\nif [ "$1" = "-Tf" ]; then ${failure}; fi\nexec /usr/bin/mv "$@"\n`, { mode: 0o700 });
+    const failed = run();
+    assert.equal(failed.status, failure === 'exit 11' ? 11 : 143, failed.stderr);
+    assert.equal(readFileSync(join(runtime, 'keep'), 'utf8'), 'old runtime');
+    assert.equal(readlinkSync(link), oldTarget);
+    assert.deepEqual(readdirSync(join(home, '.local/lib')), ['blip-cli']);
+  }
+  rmSync(join(mocks, 'mv'));
+  // A verified archive with a changed layout must fail before activation.
+  execFileSync('tar', ['-czf', archive, '-C', home, 'fake.c']);
+  const layout = run();
+  assert.notEqual(layout.status, 0); assert.match(layout.stderr, /Not found in archive/);
+  assert.equal(readFileSync(join(runtime, 'keep'), 'utf8'), 'old runtime');
+  assert.equal(readlinkSync(link), oldTarget);
+});

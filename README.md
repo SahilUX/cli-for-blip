@@ -13,7 +13,7 @@ blip logout
 
 ## What you need
 
-- Linux with glibc, on x86-64 or aarch64. macOS is not supported yet
+- Linux with glibc on x86-64. The aarch64 installer is experimental; its runtime has not been tested. macOS is not supported yet
 - Node.js 22 or newer (`node --version` to check)
 - A C compiler (`cc`), `git`, `curl`, `tar`, and `sha256sum` to install. On Debian or Ubuntu: `sudo apt install build-essential git curl tar coreutils`
 - A Blip account, with Blip also installed on at least one other device you want to send to

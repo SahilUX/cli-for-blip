@@ -43,6 +43,8 @@ cleanup() {
   exit "$result"
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 mkdir -- "$work/next"
 cc -std=c11 -O2 -Wall -Wextra -Werror "$here/native/host.c" -ldl -o "$work/next/blip-core"
 echo "Downloading Blip 1.2.6 native engine for $arch..."

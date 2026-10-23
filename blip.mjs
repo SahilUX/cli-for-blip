@@ -120,7 +120,12 @@ async function lock() {
   return release;
 }
 async function start() {
-  if (await reachable()) return false;
+  if (await reachable()) {
+    // A concurrent starter may have opened the socket but still be supplying
+    // the initial user agent. Wait until it has finished initialization.
+    if (existsSync(LOCK)) { const releaseLock = await lock(); releaseLock(); }
+    return false;
+  }
   if (!existsSync(APP)) die(`Blip is not installed at ${APP}. Install it with ${HERE}/install.sh (or set BLIP_APP)`);
   if (process.platform !== 'linux') die('starting the native Blip core is supported only on Linux');
   if (!existsSync(LIB)) die(`Blip core is not installed at ${LIB}. Run ${HERE}/install.sh (or set BLIP_LIB)`);
@@ -133,7 +138,12 @@ async function start() {
   if (!ownPid()) {
     if (existsSync(LOG)) renameSync(LOG, `${LOG}.1`);                                      // keep one previous run
     rmSync(TMP, { recursive: true, force: true }); mkdirSync(TMP, { mode: 0o700 });
-    for (const path of [dirname(SOCK), DATA]) { mkdirSync(path, { recursive: true, mode: 0o700 }); chmodSync(path, 0o700); }
+    for (const path of [dirname(SOCK), DATA]) {
+      mkdirSync(path, { recursive: true, mode: 0o700 });
+      // These two directories belong to Blip. An existing custom socket
+      // directory can hold unrelated files, so preserve its permissions.
+      if (path === DATA || path === `${HOME}/.cache/net.blip.Blip`) chmodSync(path, 0o700);
+    }
     const log = openSync(LOG, 'a', 0o600);                                             // append mode for native diagnostics
     process.umask(process.umask(0o022) | 0o022);                                           // the app creates its socket under this umask: no one else may write to (connect to) it
     const child = spawn(argv[0], argv.slice(1), { cwd: HOME, env: { ...process.env, TMPDIR: TMP }, detached: true, stdio: ['ignore', log, log] });

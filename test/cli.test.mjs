@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync, statSync, realpathSync, symlinkSync, openSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync, statSync, realpathSync, symlinkSync, openSync, chmodSync } from 'node:fs';
 import { tmpdir, hostname } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -325,7 +325,8 @@ test('a socket that is not a socket is refused', async () => {
 // pid/starttime checks without a Blip installation or account.
 test('native lifecycle starts one private daemon without display tools and stops only its own process', { skip: process.platform !== 'linux', timeout: 15000 }, async (t) => {
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'blip-cli-life-')));
-  const cache = join(home, '.cache/net.blip.Blip'), sock = join(cache, 'sock');
+  const cache = join(home, 'shared-cache'), sock = join(cache, 'sock');
+  mkdirSync(cache); chmodSync(cache, 0o750);
   const app = join(home, 'fake-core.mjs'), lib = join(home, 'fake.so');
   const env = { BLIP_APP: app, BLIP_LIB: lib, PATH: '/nonexistent' };
   t.after(async () => { await blip(home, sock, ['stop'], env); rmSync(home, { recursive: true, force: true }); });
@@ -342,20 +343,30 @@ const server = net.createServer(c => {
   c.once('data', b => {
     const dispatch = b.includes(Buffer.from('/Dispatch'));
     if (dispatch) fs.appendFileSync(data + '/events', b);
-    c.end(Buffer.from(dispatch ? '050102000d010300' : '${response.toString('hex')}', 'hex'));
+    if (dispatch) setTimeout(() => { fs.writeFileSync(data + '/initialized', 'ready'); c.end(Buffer.from('050102000d010300', 'hex')); }, 500);
+    else c.end(Buffer.from('${response.toString('hex')}', 'hex'));
   });
 });
 server.listen(cache + '/sock');
 process.on('SIGTERM', () => server.close(() => process.exit(0)));
 `, { mode: 0o700 });
-  const starts = await Promise.all([blip(home, sock, ['start'], env), blip(home, sock, ['start'], env)]);
+  const firstStart = blip(home, sock, ['start'], env);
+  const until = Date.now() + 3000;
+  while (!existsSync(sock) && Date.now() < until) await new Promise((r) => setTimeout(r, 20));
+  assert.equal(existsSync(sock), true);
+  // The second command sees a listening socket while initialization is still
+  // in flight. It must wait for the starter, rather than returning early.
+  const secondStart = await blip(home, sock, ['start'], env);
+  assert.equal(existsSync(join(home, '.local/share/net.blip.Blip/initialized')), true);
+  const starts = [await firstStart, secondStart];
   for (const r of starts) assert.equal(r.code, 0, r.err);
   assert.equal(starts.filter(r => /starting Blip/.test(r.err)).length, 1);
   const launch = JSON.parse(readFileSync(join(home, '.local/share/net.blip.Blip/launch.json'), 'utf8'));
   assert.deepEqual(launch.args, [lib, cache, join(home, '.local/share/net.blip.Blip')]);
   assert.equal(launch.tmp, join(home, '.cache/blip-cli/tmp'));
   assert.ok(readFileSync(join(home, '.local/share/net.blip.Blip/events')).includes(Buffer.from('event.SetUserAgent')));
-  for (const path of [cache, join(home, '.local/share/net.blip.Blip'), join(home, '.cache/blip-cli')]) assert.equal(statSync(path).mode & 0o777, 0o700);
+  assert.equal(statSync(cache).mode & 0o777, 0o750, 'custom directory permissions must be preserved');
+  for (const path of [join(home, '.local/share/net.blip.Blip'), join(home, '.cache/blip-cli')]) assert.equal(statSync(path).mode & 0o777, 0o700);
   assert.equal(statSync(join(home, '.cache/blip-cli/app.log')).mode & 0o777, 0o600);
   const status = await blip(home, sock, ['status'], env);
   assert.equal(status.code, 0); assert.match(status.out, /running in the background/);

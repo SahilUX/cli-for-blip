@@ -9,9 +9,9 @@ the official archive, verifying its SHA-256 checksum. No GUI app is installed.
 - Run `node --test` after every change. `test/` drives the CLI and the DRPC
   client against a fake Blip on a unix socket, so it needs no Blip install.
   When you add or change a message, a guard or an exit code, add a test there.
-- `start`, `stop` and real sign-in need Linux with the native runtime installed. To test
-  them without touching this machine's session, run with a throwaway `HOME`
-  and `BLIP_APP` / `BLIP_LIB` pointing at the native host and library. A test login still adds a
+- Real-engine startup and sign-in need Linux with the native runtime. Use a
+  throwaway `HOME` and `BLIP_APP` / `BLIP_LIB` pointing at the native host and
+  library to keep tests separate from the live session. A test login adds a
   device to the account you sign in to, under the name you pass with
   `--name`. Pick a distinct name and run `blip logout` afterwards, which
   removes that device again.
