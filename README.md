@@ -2,7 +2,7 @@
 
 Send files and folders to your own [Blip](https://blip.net) devices from the terminal, on a Linux machine with no screen.
 
-Blip has no official command line tool, so `blip` runs the Blip desktop app in the background on a virtual display and talks to its local RPC socket. It is unofficial and not affiliated with Blip Studio Inc. It has no npm dependencies. It was reverse-engineered from Blip 1.2.6 for Linux (Go core, `storj.io/drpc` v0.0.32, protobuf events packed as `Any`).
+`blip` runs Blip's native transfer engine directly and talks to its local RPC socket. It needs no GUI app, Java runtime, virtual display, or D-Bus session. It is unofficial and not affiliated with Blip Studio Inc. The Node.js client has no npm dependencies; a small C launcher hosts the proprietary engine downloaded from Blip. The native interface and RPC messages were derived from Blip 1.2.6 for Linux.
 
 ```sh
 blip login                          # sign in with the code Blip emails you
@@ -13,21 +13,18 @@ blip logout
 
 ## What you need
 
-- Linux
+- Linux with glibc on x86-64. The aarch64 installer is experimental; its runtime has not been tested. macOS is not supported yet
 - Node.js 22 or newer (`node --version` to check)
-- Xvfb (`xvfb-run`), D-Bus (`dbus-run-session`), and the X libraries the app loads. On Debian or Ubuntu: `sudo apt install xvfb xauth dbus libxi6 libxtst6 libfontconfig1`. A desktop install already has the libraries; a minimal server or container may not
-- `git` and `curl` to install
+- A C compiler (`cc`), `git`, `curl`, `tar`, and `sha256sum` to install. On Debian or Ubuntu: `sudo apt install build-essential git curl tar coreutils`
 - A Blip account, with Blip also installed on at least one other device you want to send to
 
-The official [Blip app](https://blip.net/#download) must be installed separately from this CLI. The installer below downloads it from Blip. Commercial use of Blip requires a Business plan under [Blip's terms of service](https://blip.net/terms-of-service).
-
-`blip` expects the app from Blip's own Linux installer, in `~/.local/opt/blip`. Other installs, such as the Snap Store package, are untested. A snap keeps its socket and data under `~/snap/blip/`, so `blip` doesn't find a running snap instance.
+The installer downloads the official Linux archive, verifies its pinned SHA-256 checksum, and extracts only the native engine library. The GUI app and its JVM are never installed. You still use Blip's proprietary engine and service, so [Blip's terms of service](https://blip.net/terms-of-service) apply. Commercial use requires a Business plan.
 
 ## Use with an agent
 
 Install the reusable [blip-cli-skill](https://github.com/SahilUX/blip-cli-skill#readme) to let an agent send files with this CLI. Its README includes installation instructions for agent skill directories.
 
-The skill provides instructions only. It requires this CLI, Node.js 22 or newer, the official Blip Linux app, an account signed in on the sending machine, and Blip on the receiving device. Installing the skill does not install or authenticate any of those prerequisites.
+The skill provides instructions only. It requires this CLI, Node.js 22 or newer, the native Blip engine installed by this repository, an account signed in on the sending machine, and Blip on the receiving device. Installing the skill does not install or authenticate any of those prerequisites.
 
 ## Install
 
@@ -39,13 +36,13 @@ cd blip-cli
 ./install.sh
 ```
 
-`install.sh` installs the Blip app with the official installer into `~/.local/opt/blip`, then points `~/.local/bin/blip` at this CLI instead of the app window. The official installer refuses to replace a `~/.local/bin/blip` it doesn't own, so the script hands the link back for the update and takes it over again afterwards. If the official installer fails, the script points the link at this CLI again.
+`install.sh` builds `native/host.c`, installs the launcher and native library in `~/.local/lib/blip-cli`, and links `~/.local/bin/blip` to this checkout. It pins Blip 1.2.6 because the hosting ABI is undocumented. Re-running it repairs the installation at that version. It stages and checks the replacement before switching, and restores the previous runtime if activation fails.
 
-If a systemd unit, a desktop autostart entry, or a script starts the Blip app through `~/.local/bin/blip`, point it at `~/.local/opt/blip/bin/blip` before you run `install.sh`. After the install, `~/.local/bin/blip` is this CLI, not the app.
+If you already run the GUI app through `~/.local/bin/blip`, stop it and update that service before installing. That path becomes the CLI. See [Migrate from the desktop runtime](#migrate-from-the-desktop-runtime).
 
 Make sure `~/.local/bin` is on your `PATH`. On Debian and Ubuntu, `~/.profile` adds it for login shells only, so a non-interactive shell, as in `ssh server blip ...`, cron, or a service, doesn't find `blip`. Use the full path, `~/.local/bin/blip`, there. The same goes for `node` if it lives somewhere like nvm: `blip` runs it with `/usr/bin/env node`, so `node` has to be on that shell's `PATH` too.
 
-To update Blip, run `./install.sh` again. It always installs the newest Blip, and `blip` was built against 1.2.6, so a new release can break it (see [Caveats](#caveats)). A Blip app that is already running keeps the old version until you run `blip stop` and `blip start`.
+To update the CLI, pull this repository and run `./install.sh` again. A running engine keeps its old code until you run `blip stop` and `blip start`. Updating the engine version requires verifying its native ABI and protocol and changing the installer pins.
 
 Don't move or delete the clone while `blip` is installed. If you move it, relink from the new place with `ln -sfn "$PWD/blip.mjs" ~/.local/bin/blip`. Running `./install.sh` there also works, but it updates Blip too.
 
@@ -60,7 +57,7 @@ rm ~/.local/bin/blip
 rm -rf ~/.cache/blip-cli "${XDG_CONFIG_HOME:-$HOME/.config}/blip-cli"
 ```
 
-To remove the Blip app as well, delete `~/.local/opt/blip` and Blip's data in `~/.local/share/net.blip.Blip`.
+Remove the installed native runtime with `rm -rf ~/.local/lib/blip-cli`. Your sign-in and Blip data stay in `~/.local/share/net.blip.Blip`; delete that directory only if you want to remove them too.
 
 ## Sign in
 
@@ -84,11 +81,11 @@ signed in as you@example.com, this device is "home-server"
 
 The session survives restarts, so you sign in once. `blip logout` signs out and removes this machine from your device list, which is what **Sign out** in the app's settings does.
 
-`login` and `logout` follow the app's own sign-in flow, but they haven't been tested end to end against the Blip app yet. Treat them as experimental. If either one misbehaves, sign in or out with the app's window instead.
+`login` and `logout` follow Blip's sign-in flow through RPC. Fresh email-code login remains experimental until tested end to end with this native host.
 
 ## The background app
 
-Every command except `status` and `stop` starts Blip if it isn't running yet. With Xvfb installed, it runs under `xvfb-run` and `dbus-run-session` with `--background`, so no window opens, nothing needs a screen, and the app doesn't depend on your login session. The app keeps running after the command exits, so later commands are fast and your other devices can reach this one.
+Every command except `status` and `stop` starts the native engine if it isn't running yet. A detached `blip-core` process loads the library directly. It keeps running after the command exits, so later commands are fast and your other devices can reach this one. No desktop login or display is needed.
 
 ```sh
 blip status   # is Blip running (exit code 1 if not), and who is signed in
@@ -96,13 +93,13 @@ blip start    # start it now
 blip stop     # stop it
 ```
 
-The app's output goes to `~/.cache/blip-cli/app.log`. Each start moves the previous log to `app.log.1`, so the log of an app that runs for months keeps growing until the next restart. `xvfb-run` and the app's Go core keep their temporary files in `~/.cache/blip-cli/tmp`, which `blip stop` removes (the app's Java side still uses `/tmp`). Only you can read the directory, the logs, and those temporary files.
+The app's output goes to `~/.cache/blip-cli/app.log`. Each start moves the previous log to `app.log.1`, so the log of an app that runs for months keeps growing until the next restart. The engine keeps temporary files in `~/.cache/blip-cli/tmp`, which `blip stop` removes. Only you can read the directory, the logs, and those temporary files.
 
 The app inherits the environment of the command that starts it, so start it from a shell that doesn't hold secrets you don't want it to see. `blip` starts it with a umask that keeps other users from writing to, and so connecting to, its socket.
 
 While the app runs, this machine is a Blip device like any other, and it receives as well as sends. Depending on the app's auto-accept setting, transfers from your own devices may be saved here without a prompt and with no size limit. `blip` can't accept, decline or cancel transfers or change that setting, and `blip transfers` lists incoming ones only as `in`. If you only want to send, run `blip stop` when you're done. Every command except `status` and `stop` starts the app again.
 
-If Blip is already running some other way and answers on its socket, for example as a systemd service or in a desktop session, `blip` uses that instance. Don't run `blip` while such an instance is still starting up, or `blip` starts a second one. `blip stop` only stops an instance that `blip` started.
+If Blip is already running some other way and answers on its socket, for example as a systemd service or in a desktop session, `blip` uses that instance. Native startup never asks the engine to take over another instance. Don't run `blip` while such an instance is still starting up, or `blip` starts a second one. `blip stop` only stops an instance that `blip` started.
 
 To start Blip at boot, add this line to your crontab (`crontab -e`):
 
@@ -117,6 +114,14 @@ Cron runs jobs with `PATH=/usr/bin:/bin`. If `command -v node` prints a path out
 ```
 
 Some systems stop a user's processes at logout (systemd-logind `KillUserProcesses=yes`). There, an app started from an ssh session stops when you log out, so start it at boot instead.
+
+## Migrate from the desktop runtime
+
+The native host uses the same `~/.local/share/net.blip.Blip` data directory and `~/.cache/net.blip.Blip/sock` socket as the Linux desktop app. Stop the old app before starting the native host. Your existing sign-in and device identity are preserved.
+
+If services launch the app through `~/.local/bin/blip`, stop and disable them before installing this CLI. After `./install.sh`, start the native host with `blip start`. Configure boot startup to run that command rather than launching the old desktop executable or its Xvfb wrapper.
+
+Once the native host works, remove the old desktop installation with its official uninstaller. For the tarball installation, download the installer from `https://static.blip.net/linux/install.sh` and run it with `--uninstall`. Keep Blip's data directory. The native runtime lives separately in `~/.local/lib/blip-cli`.
 
 ## Send files
 
@@ -202,8 +207,9 @@ Control characters in names, ids, and error texts from Blip are printed as `\uXX
 | `BLIP_TO` | | Device `send` uses when there is no `--to` |
 | `BLIP_TIMEOUT_S` | `300` | Seconds `send` waits for completion before exiting with code 3. Must be a positive number |
 | `BLIP_DEVICE_NAME` | hostname up to the first dot | Device name `login` registers, unless `--name` is given |
-| `BLIP_APP` | `~/.local/opt/blip/bin/blip` | Path of the Blip app executable |
-| `BLIP_SOCK` | `~/.cache/net.blip.Blip/sock` | Path of the Blip socket. It must be a socket you own |
+| `BLIP_APP` | `~/.local/lib/blip-cli/blip-core` | Path of the native host executable, which takes library, cache directory, and data directory arguments |
+| `BLIP_LIB` | `~/.local/lib/blip-cli/libblip.so` | Path of the native Blip 1.2.6 library |
+| `BLIP_SOCK` | `~/.cache/net.blip.Blip/sock` | Path of the Blip socket. It must be a socket you own. Native startup requires the basename `sock` |
 | `XDG_CONFIG_HOME` | `~/.config` | `blip` keeps the remembered device in `$XDG_CONFIG_HOME/blip-cli/config.json` |
 
 Whatever answers on `BLIP_SOCK` sees your email, your sign-in code, and the paths you send. Anyone who can connect to the socket can read your Blip session.
@@ -233,11 +239,13 @@ fi
 tail -50 ~/.cache/blip-cli/app.log
 ```
 
-The log holds everything the Blip app prints, including Xvfb's errors. It may include your email address, device names and ids, file names, and network addresses. Remove those before you share it, for example in an issue.
+The log holds everything the engine prints. It may include sign-in events, your email address, device names and ids, file names, and network addresses. Treat it as private and remove sensitive data before sharing an excerpt.
 
-`xvfb-run not found` means Xvfb is missing. Install it. Without Xvfb, `blip` can only use a local desktop display such as `:0`, not one forwarded by `ssh -X`, because the app would keep `ssh` from exiting and stop when the connection closes. On a desktop display the app also uses your desktop's D-Bus, so it stops when you log out of the desktop. `xauth not found` means Xvfb is there but `xauth`, which `xvfb-run` needs, is not. `dbus-run-session not found` means D-Bus is missing. `Blip is not installed` means `~/.local/opt/blip/bin/blip` is missing. Run `install.sh` from the clone, or point `BLIP_APP` at the app.
+`Blip is not installed` means the native host executable is missing. `Blip core is not installed` means the native library is missing. Run `./install.sh`, or point `BLIP_APP` and `BLIP_LIB` at the installed native host and library. `BLIP_APP` no longer accepts the desktop executable.
 
-If the log mentions `LibraryLoadException` or a missing `.so` file, the app is missing X libraries. Install the ones listed in [What you need](#what-you-need).
+`starting the native Blip core is supported only on Linux` means you attempted automatic startup on an unsupported OS. `native startup requires BLIP_SOCK to end in /sock` means the engine cannot use the chosen socket filename. An existing socket with another filename can still be used.
+
+The app log reports native loading errors, including `could not load Blip core` and `unsupported Blip core: missing hosting symbols`. Check that the library matches the host architecture and supported Blip version. The installer checks both hosting symbols before activating it.
 
 `Blip answers but unexpected reply from Blip (is this a supported Blip version?)` means the app came up but speaks a protocol `blip` doesn't understand, usually after a Blip update. See [Caveats](#caveats).
 
@@ -294,6 +302,8 @@ Signing in is two events: `event.SendRegistrationCodeRequested{email, device_nam
 
 Sending is three events: `event.TransferCreateRequested{transfer_id, peer_id}`, `event.TransferAddContentRequested{transfer_id, locations[]}` and `event.TransferInviteRequested{transfer_id, peer_id}`, where `blip.PeerId{user_id, device_id}`. Transfer status (tag 800): 1 Created, 2 InviteRequested, 3 Invited, 4 Pending, 5 Active, 6 Paused, 7 ResumeRequested, 8 Completed, 9 Cancelled.
 
+The host loads `libblip_host` and `libblip_host_stop` with `dlopen` and `dlsym`. It starts hosting without takeover, handles SIGINT and SIGTERM, calls the engine's stop function, and exits without unloading Go code while its threads may still exist. The CLI sends `event.SetUserAgent` after native startup and before fresh registration. REA supplied Go build information and native disassembly for this interface.
+
 The method names and field numbers come from the Wire-generated protobuf classes in the Blip 1.2.6 Linux app (`rpc.DispatchRequest`, `net.blip.libblip.event.*` and `net.blip.libblip.frontend.{State,Registration,Auth,Transfer,Users}`). See [LEGAL.md](LEGAL.md) for what that review covered and what it didn't settle.
 
 ## Caveats
@@ -304,7 +314,7 @@ Never print raw `GetState` output or read `~/.local/share/net.blip.Blip/state.da
 
 ## Development
 
-`node --test` runs the tests. They drive `blip.mjs` and `drpc.mjs` against a fake Blip on a unix socket with a throwaway `HOME`, so they need neither Blip nor a Blip account. `start`, `stop`, and the parts that need `/proc` run only on Linux with the real app.
+`node --test` runs the tests. They drive the CLI and DRPC client against a fake socket server with a throwaway `HOME`. Native host tests compile a fake library with `cc`, and Linux lifecycle tests use a fake daemon. No Blip account or installed engine is needed. Run real-engine startup checks on Linux with a throwaway `HOME`, and never print raw state or read `state.dat`.
 
 ## License and Blip attribution
 

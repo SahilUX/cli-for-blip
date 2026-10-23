@@ -21,3 +21,19 @@ The JavaScript DRPC helper names `storj.io/drpc` v0.0.32 as its protocol referen
 The reviewed Blip terms do not expressly authorize this reverse-engineered client or the use of its undocumented RPC interface. No permission from Blip Studio Inc. for this project or its use of the Blip name has been established. Attribution and an unofficial-project notice do not resolve those questions.
 
 Compatibility with the app is a technical observation, not a grant of rights. Whether reverse engineering, interoperability, publication, or descriptive trademark use is permitted depends on the applicable law, agreements, and facts. Permission or a qualified legal review is needed to settle those questions. This document records the review's limits and does not claim legal clearance.
+
+## Native host review, October 23, 2026
+
+The Linux headless runtime uses the proprietary `libblip-jni.so` library
+from Blip's official 1.2.6 archive. The installer verifies a pinned archive
+checksum and extracts only that library. It does not redistribute the library
+in this repository or install the desktop app and JVM.
+
+REA 6.7.0 supplied Go build information and GNU objdump disassembly for the
+native library. Java API inspection supplied matching hosting arguments and
+user-agent message fields. The small C launcher in `native/host.c` was written
+for this project using the exported C interface. No decompiled implementation
+bodies, generated schema classes, or Blip binary assets are committed.
+
+Running the native library directly remains use of Blip's proprietary engine
+and undocumented interfaces. The uncertainties above still apply.

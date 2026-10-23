@@ -1,18 +1,18 @@
 #!/usr/bin/env node
-// blip: headless command line for the Blip desktop app, over its local DRPC socket.
+// blip: headless command line for the Blip native engine, over its local DRPC socket.
 // Reverse-engineered from Blip 1.2.6 (Go core, storj.io/drpc v0.0.32, service
 // /rpc.Service/{GetState,Dispatch}, events packed as protobuf Any). Needs Node >= 22.
-// Every command except status and stop starts the app in the background on a virtual display if it isn't running.
+// Every command except status and stop starts the native engine in the background if it isn't running.
 // Sends only to the signed-in account's own devices; matching is by device id or exact name, case-insensitive.
 //   blip login [email]            sign in with the code Blip emails you
 //   blip logout                   sign out and remove this device from the account
 //   blip send <path>... [--to d]  send files/folders to one of your devices, wait for completion
 //   blip devices | transfers [id] | status | start | stop
 import { randomUUID } from 'node:crypto';
-import { resolve, dirname } from 'node:path';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, openSync, rmSync, renameSync, chmodSync, realpathSync, statSync, lstatSync, readlinkSync, readdirSync } from 'node:fs';
-import { homedir, hostname } from 'node:os';
-import { spawn, execFileSync } from 'node:child_process';
+import { resolve, dirname, basename } from 'node:path';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, openSync, rmSync, renameSync, chmodSync, realpathSync, statSync, lstatSync, readlinkSync } from 'node:fs';
+import { homedir, hostname, type, release } from 'node:os';
+import { spawn } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
@@ -21,11 +21,12 @@ import { call, fields, uv } from './drpc.mjs';
 const HOME = homedir();
 const HERE = dirname(fileURLToPath(import.meta.url));                                     // this checkout, for the install hint
 const SOCK = process.env.BLIP_SOCK ?? `${HOME}/.cache/net.blip.Blip/sock`;
-const APP = resolve(process.env.BLIP_APP ?? `${HOME}/.local/opt/blip/bin/blip`);
+const APP = resolve(process.env.BLIP_APP ?? `${HOME}/.local/lib/blip-cli/blip-core`);
+const LIB = resolve(process.env.BLIP_LIB ?? `${HOME}/.local/lib/blip-cli/libblip.so`);
 const DATA = `${HOME}/.local/share/net.blip.Blip`;
 const OWN = `${HOME}/.cache/blip-cli`;                                                     // pid file, start lock and app log, private to the user
 const PIDFILE = `${OWN}/pid`, LOCK = `${OWN}/start.lock`, LOG = `${OWN}/app.log`;
-const TMP = `${OWN}/tmp`;                                                                   // TMPDIR for the app and xvfb-run, which leaves its temp dir behind when stopped by a signal
+const TMP = `${OWN}/tmp`;                                                                   // private TMPDIR for the engine
 const XDG = process.env.XDG_CONFIG_HOME;
 const CONFIG = `${XDG?.startsWith('/') ? XDG : `${HOME}/.config`}/blip-cli/config.json`;   // remembered --to device
 const STATUS = ['Unknown', 'Created', 'InviteRequested', 'Invited', 'Pending', 'Active', 'Paused', 'ResumeRequested', 'Completed', 'Cancelled'];
@@ -80,11 +81,17 @@ const dispatch = (name, msg = Buffer.alloc(0)) => {                             
   return call(SOCK, '/rpc.Service/Dispatch', ld(1, any));
 };
 
-// Background app: xvfb-run gives it a display of its own, --background keeps its window closed.
+// The desktop frontend normally supplies this after connecting. A headless host
+// needs it too, especially before registering a fresh device.
+const initializeCore = () => dispatch('SetUserAgent', ld(1, Buffer.concat([
+  vi(102, 5), s(200, type()), s(201, release()), s(300, 'net.blip.blip-cli'),
+  s(301, 'blip-cli'), s(302, '1.2.6'),
+])));
+
+// Background native engine. The same socket can also belong to a separately running desktop app.
 // Only "nothing listens on the socket" means Blip isn't running; a hung or incompatible app is an error, not a reason to start a second one.
 const reachable = () => getState().then(() => true, (e) => { if (e.syscall === 'connect' && ['ENOENT', 'ECONNREFUSED'].includes(e.code)) return false; throw e; });
 const answers = () => getState().then(() => true, () => false);                          // while starting or stopping, any failure means "not yet"
-const onPath = (bin) => { try { execFileSync('sh', ['-c', 'command -v "$1"', 'sh', bin], { stdio: 'ignore' }); return true; } catch { return false; } };
 const running = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 // /proc/<pid>/stat fields after the command name: [0] is field 3 (state), [2] pgrp, [19] starttime.
 const procStat = (pid) => { try { const t = readFileSync(`/proc/${pid}/stat`, 'utf8'); return t.slice(t.lastIndexOf(')') + 2).split(' '); } catch { return null; } };
@@ -113,25 +120,31 @@ async function lock() {
   return release;
 }
 async function start() {
-  if (await reachable()) return false;
+  if (await reachable()) {
+    // A concurrent starter may have opened the socket but still be supplying
+    // the initial user agent. Wait until it has finished initialization.
+    if (existsSync(LOCK)) { const releaseLock = await lock(); releaseLock(); }
+    return false;
+  }
   if (!existsSync(APP)) die(`Blip is not installed at ${APP}. Install it with ${HERE}/install.sh (or set BLIP_APP)`);
-  // Headless, the app gets a display and a D-Bus of its own: an inherited bus may be another user's (after su) or close with an ssh session.
-  // Without Xvfb only a local display will do: one forwarded by ssh -X keeps ssh from exiting and takes the app down when it closes.
-  const headless = onPath('xvfb-run');
-  if (!headless && !/^:\d+(\.\d+)?$/.test(process.env.DISPLAY ?? '')) die('xvfb-run not found. Install Xvfb (Debian/Ubuntu: sudo apt install xvfb) so Blip can run without a screen');
-  if (headless && !onPath('xauth')) die('xauth not found. Install it (Debian/Ubuntu: sudo apt install xauth): xvfb-run needs it');
-  const dbus = headless || !process.env.DBUS_SESSION_BUS_ADDRESS;
-  if (dbus && !onPath('dbus-run-session')) die('dbus-run-session not found. Install D-Bus (Debian/Ubuntu: sudo apt install dbus) so Blip can run without a desktop session');
-  const app = [...(dbus ? ['dbus-run-session', '--'] : []), APP, '--background'];
-  const argv = headless ? ['xvfb-run', '-a', '-e', LOG, '-s', '-screen 0 1280x800x24', ...app] : app;
+  if (process.platform !== 'linux') die('starting the native Blip core is supported only on Linux');
+  if (!existsSync(LIB)) die(`Blip core is not installed at ${LIB}. Run ${HERE}/install.sh (or set BLIP_LIB)`);
+  if (basename(SOCK) !== 'sock') die('native startup requires BLIP_SOCK to end in /sock');
+  const argv = [APP, LIB, dirname(SOCK), DATA];
   mkdirSync(OWN, { recursive: true, mode: 0o700 }); chmodSync(OWN, 0o700);
-  const release = await lock();
-  if (await reachable()) { release(); return false; }                                      // another blip started it while we waited
+  const releaseLock = await lock();
+  if (await reachable()) { releaseLock(); return false; }                                      // another blip started it while we waited
   let exited = () => !ownPid();                                                            // an earlier start that timed out may still be booting
   if (!ownPid()) {
     if (existsSync(LOG)) renameSync(LOG, `${LOG}.1`);                                      // keep one previous run
     rmSync(TMP, { recursive: true, force: true }); mkdirSync(TMP, { mode: 0o700 });
-    const log = openSync(LOG, 'a', 0o600);                                             // append mode: Xvfb (xvfb-run -e) writes here too
+    for (const path of [dirname(SOCK), DATA]) {
+      mkdirSync(path, { recursive: true, mode: 0o700 });
+      // These two directories belong to Blip. An existing custom socket
+      // directory can hold unrelated files, so preserve its permissions.
+      if (path === DATA || path === `${HOME}/.cache/net.blip.Blip`) chmodSync(path, 0o700);
+    }
+    const log = openSync(LOG, 'a', 0o600);                                             // append mode for native diagnostics
     process.umask(process.umask(0o022) | 0o022);                                           // the app creates its socket under this umask: no one else may write to (connect to) it
     const child = spawn(argv[0], argv.slice(1), { cwd: HOME, env: { ...process.env, TMPDIR: TMP }, detached: true, stdio: ['ignore', log, log] });
     let gone = false; child.on('exit', () => { gone = true; }); exited = () => gone;
@@ -146,23 +159,20 @@ async function start() {
     if (Date.now() > deadline) die(last ? `Blip answers but ${safe(last)}, see ${LOG}` : `Blip did not open its socket within 60 s, see ${LOG} (it may still be starting; blip stop ends it)`);
     await sleep(500);
   }
-  release();
+  await initializeCore();
+  releaseLock();
   return true;
 }
 async function stop() {
   const pid = ownPid();
   if (!pid) {
-    if (await reachable().catch(() => true)) die('Blip is running, but blip did not start it (a systemd unit or the desktop app?). Stop it there');
+    if (await reachable().catch(() => true)) die('Blip is running, but blip did not start it (a service or the desktop app?). Stop it there');
     console.error('Blip is not running'); return;
   }
-  // xvfb-run and dbus-run-session lead the group and exit after the app, cleaning up behind it. Signal the rest of
-  // the group and leave the leader, so the pid file stays valid until the app is really gone.
-  let wrapper = false; try { wrapper = /(^|\/)(xvfb-run|dbus-run-session)\0/.test(readFileSync(`/proc/${pid}/cmdline`, 'utf8')); } catch {}
-  const rest = wrapper ? readdirSync('/proc').filter((d) => /^[0-9]+$/.test(d) && d !== String(pid) && procStat(d)?.[2] === String(pid)).map(Number) : [];
-  for (const p of rest.length ? rest : [-pid]) try { process.kill(p, 'SIGTERM'); } catch (e) { if (e.code !== 'ESRCH') throw e; }
+  try { process.kill(-pid, 'SIGTERM'); } catch (e) { if (e.code !== 'ESRCH') throw e; }
   for (let i = 0; i < 40 && (ownPid() || (await answers())); i++) await sleep(250);
   if (ownPid()) die(`Blip did not stop within 10 s, see ${LOG}`);
-  if (await answers()) die('Blip still answers on its socket after 10 s (another instance, such as a systemd unit, or a stuck app)');
+  if (await answers()) die('Blip still answers on its socket after 10 s (another instance or a stuck core)');
   rmSync(TMP, { recursive: true, force: true });
   console.error('Blip stopped');
 }
@@ -271,6 +281,7 @@ if (cmd === 'start') {
   if (!email) die('usage: blip login [email]', 2);
   const name = (flag.name || process.env.BLIP_DEVICE_NAME || '').trim() || hostname().split('.')[0];
   // Ignore Registration state left over from an earlier attempt until it changes, or for 1.5 s.
+  await initializeCore();
   const t0 = Date.now(); let moved = false;
   await dispatch('SendRegistrationCodeRequested', Buffer.concat([s(1, email), s(2, name)]));
   const sent = await waitFor((st) => { const r = session(st); moved ||= r.reg !== me.reg || r.err !== me.err; return (moved || Date.now() - t0 > 1500) && (r.reg === 'CodeSent' || (r.err && r.reg === 'NotStarted')) && r; }, 30000, 'Blip to send the code');
