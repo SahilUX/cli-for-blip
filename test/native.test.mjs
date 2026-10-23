@@ -16,6 +16,13 @@ test('native host checks the ABI, passes hosting arguments and stops gracefully'
   const host = join(dir, 'blip-core'), library = join(dir, 'fake.so');
   const source = fileURLToPath(new URL('../native/host.c', import.meta.url));
   execFileSync('cc', ['-std=c11', '-O2', '-Wall', '-Wextra', '-Werror', source, '-ldl', '-o', host]);
+  if (process.platform === 'darwin') {
+    const id = spawnSync(host, ['--identity', String(process.pid)], { encoding: 'utf8' });
+    assert.equal(id.status, 0);
+    assert.match(id.stdout, new RegExp(`^${process.pid} [0-9]+ [0-9]+:[0-9]+\\n$`));
+    for (const invalid of ['0', '-1', 'not-a-pid']) assert.equal(spawnSync(host, ['--identity', invalid]).status, 2);
+    assert.notEqual(spawnSync(host, ['--identity', '1']).status, 0);
+  }
   writeFileSync(join(dir, 'fake.c'), `
 #include <stdio.h>
 #include <stdlib.h>

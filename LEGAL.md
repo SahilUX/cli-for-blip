@@ -37,3 +37,18 @@ bodies, generated schema classes, or Blip binary assets are committed.
 
 Running the native library directly remains use of Blip's proprietary engine
 and undocumented interfaces. The uncertainties above still apply.
+
+## macOS host review, October 24, 2026
+
+The macOS runtime uses the intact BlipKit framework from the official Blip
+1.2.3 archive, build 20260927200815. The installer pins its SHA-256 checksum
+and verifies the vendor framework signature without modifying or re-signing
+it. The desktop executable is not installed or launched. Framework resources
+remain because the signature binds them. Apple system framework dependencies
+remain part of the Mac runtime.
+
+REA Go build inspection of the arm64 image identified the same native engine
+entry point family as Linux. The existing C host loaded it and served RPC in
+an isolated profile. No Blip binary, framework resources, or decompiled code
+are committed. The proprietary-engine and interoperability uncertainties
+above continue to apply.
