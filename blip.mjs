@@ -12,23 +12,19 @@ import { randomUUID } from 'node:crypto';
 import { resolve, dirname, basename } from 'node:path';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, openSync, rmSync, renameSync, chmodSync, realpathSync, statSync, lstatSync, readlinkSync } from 'node:fs';
 import { homedir, hostname, type, release } from 'node:os';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { call, fields, uv } from './drpc.mjs';
+import { runtimePaths } from './platform.mjs';
 
 const HOME = homedir();
 const HERE = dirname(fileURLToPath(import.meta.url));                                     // this checkout, for the install hint
-const SOCK = process.env.BLIP_SOCK ?? `${HOME}/.cache/net.blip.Blip/sock`;
-const APP = resolve(process.env.BLIP_APP ?? `${HOME}/.local/lib/blip-cli/blip-core`);
-const LIB = resolve(process.env.BLIP_LIB ?? `${HOME}/.local/lib/blip-cli/libblip.so`);
-const DATA = `${HOME}/.local/share/net.blip.Blip`;
-const OWN = `${HOME}/.cache/blip-cli`;                                                     // pid file, start lock and app log, private to the user
+const PATHS = runtimePaths(HOME, process.platform, process.env);
+const { socket: SOCK, app: APP, library: LIB, data: DATA, own: OWN, config: CONFIG } = PATHS;
 const PIDFILE = `${OWN}/pid`, LOCK = `${OWN}/start.lock`, LOG = `${OWN}/app.log`;
-const TMP = `${OWN}/tmp`;                                                                   // private TMPDIR for the engine
-const XDG = process.env.XDG_CONFIG_HOME;
-const CONFIG = `${XDG?.startsWith('/') ? XDG : `${HOME}/.config`}/blip-cli/config.json`;   // remembered --to device
+const TMP = `${OWN}/tmp`;
 const STATUS = ['Unknown', 'Created', 'InviteRequested', 'Invited', 'Pending', 'Active', 'Paused', 'ResumeRequested', 'Completed', 'Cancelled'];
 const REG = ['NotStarted', 'SendingCode', 'CodeSent', 'Registering'];                     // frontend.Registration.status
 const USAGE = `usage: blip <command>
@@ -85,7 +81,7 @@ const dispatch = (name, msg = Buffer.alloc(0)) => {                             
 // needs it too, especially before registering a fresh device.
 const initializeCore = () => dispatch('SetUserAgent', ld(1, Buffer.concat([
   vi(102, 5), s(200, type()), s(201, release()), s(300, 'net.blip.blip-cli'),
-  s(301, 'blip-cli'), s(302, '1.2.6'),
+  s(301, 'blip-cli'), s(302, PATHS.engineVersion),
 ])));
 
 // Background native engine. The same socket can also belong to a separately running desktop app.
@@ -95,12 +91,29 @@ const answers = () => getState().then(() => true, () => false);                 
 const running = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 // /proc/<pid>/stat fields after the command name: [0] is field 3 (state), [2] pgrp, [19] starttime.
 const procStat = (pid) => { try { const t = readFileSync(`/proc/${pid}/stat`, 'utf8'); return t.slice(t.lastIndexOf(')') + 2).split(' '); } catch { return null; } };
-// The pid file holds "<pid> <starttime>", so a reused pid after a reboot or crash never matches.
+// The pid file holds a PID and its kernel start timestamp, so reused PIDs
+// cannot make stop signal another process. The Mac helper also checks UID.
+function processIdentity(pid) {
+  if (!/^[1-9][0-9]*$/.test(String(pid))) return null;
+  if (process.platform === 'darwin') {
+    try {
+      const value = execFileSync(APP, ['--identity', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      const match = /^(\d+) (\d+) (\d+:\d+)$/.exec(value);
+      if (!match || match[1] !== String(pid)) throw new Error('invalid identity response');
+      return { group: match[2], since: match[3] };
+    } catch (e) {
+      if (e.status === 4) return null;  // gone, zombie or owned by another user
+      throw new Error(`could not verify Blip process ${pid}; check BLIP_APP or reinstall the native host before retrying`);
+    }
+  }
+  const st = procStat(pid);
+  return st && !'ZX'.includes(st[0]) ? { group: st[2], since: st[19] } : null;
+}
 function ownPid() {
   let pid, since;
   try { [pid, since] = readFileSync(PIDFILE, 'utf8').trim().split(' '); } catch { return 0; }
-  const st = /^[1-9][0-9]*$/.test(pid) && procStat(pid);
-  if (st && st[2] === pid && st[19] === since && !'ZX'.includes(st[0])) return Number(pid);   // a zombie (no reaping init in a container) has exited
+  const identity = processIdentity(pid);
+  if (identity && identity.group === pid && identity.since === since) return Number(pid);
   rmSync(PIDFILE, { force: true });
   return 0;
 }
@@ -127,9 +140,11 @@ async function start() {
     return false;
   }
   if (!existsSync(APP)) die(`Blip is not installed at ${APP}. Install it with ${HERE}/install.sh (or set BLIP_APP)`);
-  if (process.platform !== 'linux') die('starting the native Blip core is supported only on Linux');
+  if (!['linux', 'darwin'].includes(process.platform)) die('starting the native Blip core is supported only on Linux and macOS');
   if (!existsSync(LIB)) die(`Blip core is not installed at ${LIB}. Run ${HERE}/install.sh (or set BLIP_LIB)`);
   if (basename(SOCK) !== 'sock') die('native startup requires BLIP_SOCK to end in /sock');
+  const maxSocketBytes = process.platform === 'darwin' ? 103 : 107;
+  if (Buffer.byteLength(SOCK) > maxSocketBytes) die(`Blip socket path is too long (maximum ${maxSocketBytes} bytes); set BLIP_SOCK to a shorter path ending in /sock`);
   const argv = [APP, LIB, dirname(SOCK), DATA];
   mkdirSync(OWN, { recursive: true, mode: 0o700 }); chmodSync(OWN, 0o700);
   const releaseLock = await lock();
@@ -142,14 +157,19 @@ async function start() {
       mkdirSync(path, { recursive: true, mode: 0o700 });
       // These two directories belong to Blip. An existing custom socket
       // directory can hold unrelated files, so preserve its permissions.
-      if (path === DATA || path === `${HOME}/.cache/net.blip.Blip`) chmodSync(path, 0o700);
+      if (path === DATA || path === PATHS.cache) chmodSync(path, 0o700);
     }
     const log = openSync(LOG, 'a', 0o600);                                             // append mode for native diagnostics
     process.umask(process.umask(0o022) | 0o022);                                           // the app creates its socket under this umask: no one else may write to (connect to) it
     const child = spawn(argv[0], argv.slice(1), { cwd: HOME, env: { ...process.env, TMPDIR: TMP }, detached: true, stdio: ['ignore', log, log] });
     let gone = false; child.on('exit', () => { gone = true; }); exited = () => gone;
     child.on('error', (e) => die(`could not run ${argv[0]}: ${e.message}`));
-    writeFileSync(PIDFILE, `${child.pid} ${procStat(child.pid)?.[19]}`, { mode: 0o600 }); child.unref();
+    try {
+      const identity = processIdentity(child.pid);
+      if (!identity || identity.group !== String(child.pid)) throw new Error(`Blip exited during startup, see ${LOG}`);
+      writeFileSync(PIDFILE, `${child.pid} ${identity.since}`, { mode: 0o600 });
+    } catch (e) { child.kill('SIGTERM'); throw e; }
+    child.unref();
   }
   console.error('starting Blip in the background...');
   const deadline = Date.now() + 60000;
@@ -251,8 +271,30 @@ if (cmd === 'send') {
   // Check every hop of a link chain as well as the resolved path, since /proc/self/fd links resolve to some other file.
   const sys = (p) => { for (let i = 0; i < 40; i++) { if (/^\/(dev|proc|sys)(\/|$)/.test(p)) return true; let t; try { t = readlinkSync(p); } catch { return false; } p = resolve(dirname(p), t); } return true; };
   for (const p of abs) { const st = statSync(p); if (!(st.isFile() || st.isDirectory()) || sys(p) || sys(realpathSync(p))) die(`refusing to send ${p}: not a regular file or folder`); }
-  const data = existsSync(DATA) && realpathSync(DATA);                                     // never ship the session: refuse DATA, anything in it, and its parents (~, /)
-  if (data) for (const p of abs) { const r = realpathSync(p); if (r === data || r.startsWith(`${data}/`) || data.startsWith(r === '/' ? '/' : `${r}/`)) die(`refusing to send ${p}: it contains Blip's own data, including your session`); }
+  // Darwin volumes commonly ignore case and normalize Unicode. Be conservative
+  // even on case-sensitive volumes rather than risk sending credential data.
+  const comparable = (p) => process.platform === 'darwin' ? p.normalize('NFC').toLowerCase() : p;
+  const contains = (a, b) => a === b || a.startsWith(`${b}/`) || b.startsWith(a === '/' ? '/' : `${a}/`);
+  const desktopData = `${HOME}/Library/Group Containers/AY8UB8KTUX.blip`;
+  let canonicalDesktopData = desktopData;
+  try { canonicalDesktopData = `${realpathSync.native(HOME)}/Library/Group Containers/AY8UB8KTUX.blip`; } catch {}
+  const protectedData = [...PATHS.protectedData, canonicalDesktopData];
+  const roots = protectedData.map(comparable);
+  for (const p of abs) {
+    // Reject obvious credential paths before resolving them, so a normal send
+    // never needs to inspect the protected desktop Group Container.
+    if (roots.some((data) => contains(comparable(p), data))) die(`refusing to send ${p}: it contains Blip's own data, including your session`);
+    const resolved = comparable(realpathSync.native(p));
+    for (const path of protectedData) {
+      // Resolve our own profile for symlinked HOME/data directories. Leave the
+      // desktop Group Container alone: only its known path is compared.
+      let data = comparable(path);
+      if (path !== desktopData && path !== canonicalDesktopData) {
+        try { data = comparable(realpathSync.native(path)); } catch {}
+      }
+      if (contains(resolved, data)) die(`refusing to send ${p}: it contains Blip's own data, including your session`);
+    }
+  }
 }
 
 if (cmd === 'stop') { await stop(); process.exit(0); }

@@ -1,16 +1,46 @@
-// Own launcher for the C hosting ABI exported by Blip 1.2.6's native engine.
-// No JVM, GUI toolkit, display server or D-Bus session is loaded.
+// Own launcher for Blip's native C hosting ABI: Linux 1.2.6, macOS 1.2.3.
+// It does not launch the desktop frontend. Mac uses the intact BlipKit framework.
+#ifdef __APPLE__
+#define _DARWIN_C_SOURCE
+#endif
 #define _POSIX_C_SOURCE 200809L
 #include <dlfcn.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#ifdef __APPLE__
+#include <libproc.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/proc.h>
+#endif
 
 static volatile sig_atomic_t stopping;
 static void request_stop(int signal) { (void)signal; stopping = 1; }
 
 int main(int argc, char **argv) {
+#ifdef __APPLE__
+    // Query only metadata for a process owned by this user. The start timestamp
+    // distinguishes a daemon from an unrelated process that reused its PID.
+    if (argc == 3 && strcmp(argv[1], "--identity") == 0) {
+        char *end;
+        long pid = strtol(argv[2], &end, 10);
+        if (*end || pid <= 0 || pid > 2147483647L) return 2;
+        struct proc_bsdinfo info;
+        if (proc_pidinfo((int)pid, PROC_PIDTBSDINFO, 0, &info, sizeof(info)) != sizeof(info)) {
+            // libproc does not reliably set errno for an absent PID. A failed
+            // existence probe distinguishes it from unavailable metadata.
+            if (kill((int)pid, 0) == -1 && errno == ESRCH) return 4;
+            return 3;
+        }
+        if (info.pbi_uid != getuid() || info.pbi_status == SZOMB) return 4;
+        printf("%u %u %llu:%llu\n", info.pbi_pid, info.pbi_pgid,
+               (unsigned long long)info.pbi_start_tvsec, (unsigned long long)info.pbi_start_tvusec);
+        return 0;
+    }
+#endif
     const int check = argc == 3 && strcmp(argv[1], "--check") == 0;
     if (!check && argc != 4) {
         fprintf(stderr, "usage: blip-core <library> <cache directory> <data directory>\n"
