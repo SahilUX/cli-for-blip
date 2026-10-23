@@ -321,7 +321,7 @@ On Linux, Blip 1.2.6 packages a Kotlin desktop frontend, a JVM, generated protob
 - `lib/app/libblip-jvm.jar`, especially `LibBlip.Companion`, `Core`, the Wire-generated `frontend` and `event` messages, and the device-kind enum.
 - `lib/app/desktopApp-desktop-1.2.6.jar`, whose startup code showed the cache/data arguments and production server address supplied to the engine.
 
-REA supplied Go build information and native disassembly through GNU objdump. We compared the native calls with Java API and bytecode listings from `javap`. That established the hosting argument order, the RPC service names, the protobuf field numbers, and the initialization event the frontend sends. We verified wire enum values rather than treating Java enum positions as protocol values.
+[REA](https://github.com/morluto/rea) supplied Go build information and native disassembly through GNU objdump. We compared the native calls with Java API and bytecode listings from `javap`. That established the hosting argument order, the RPC service names, the protobuf field numbers, and the initialization event the frontend sends. We verified wire enum values rather than treating Java enum positions as protocol values.
 
 On macOS, Blip 1.2.3 puts its native engine in `Blip.app/Contents/Frameworks/BlipKit.framework/Versions/A/BlipKit`. Its universal binary exports the same hosting functions. REA identified the embedded Go engine in the arm64 image, and a small launcher proved that it could serve the existing RPC protocol without starting the desktop executable.
 
