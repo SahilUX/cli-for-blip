@@ -15,7 +15,7 @@ for tool in cc curl tar sha256sum; do
 done
 case "$(uname -m)" in
   x86_64) arch=amd64; sha=a88a700e77d58988dc3b1f9ebd38c65782140187a1f17f6a1281b4ab43f5f3df ;;
-  aarch64) arch=aarch64; sha=0147913600e0b63ab20a39973fc572536a903bbc6f8ee60877a04ea2216eba32 ;;
+  aarch64) echo 'note: the aarch64 native runtime is experimental and has not been tested' >&2; arch=aarch64; sha=0147913600e0b63ab20a39973fc572536a903bbc6f8ee60877a04ea2216eba32 ;;
   *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 if [[ -e $runtime || -L $runtime ]]; then

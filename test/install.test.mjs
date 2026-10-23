@@ -81,4 +81,9 @@ test('installer activates a staged runtime and restores it if activation fails o
   assert.notEqual(layout.status, 0); assert.match(layout.stderr, /Not found in archive/);
   assert.equal(readFileSync(join(runtime, 'keep'), 'utf8'), 'old runtime');
   assert.equal(readlinkSync(link), oldTarget);
+  execFileSync('tar', ['-czf', archive, '-C', root, 'blip-1.2.6']);
+  writeFileSync(join(mocks, 'uname'), '#!/bin/sh\nif [ "$1" = "-s" ]; then echo Linux; else echo aarch64; fi\n', { mode: 0o700 });
+  const arm = run();
+  assert.equal(arm.status, 0, arm.stderr);
+  assert.match(arm.stderr, /aarch64 native runtime is experimental and has not been tested/);
 });
