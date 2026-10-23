@@ -42,7 +42,7 @@ and undocumented interfaces. The uncertainties above still apply.
 
 The macOS runtime uses the intact BlipKit framework from the official Blip
 1.2.3 archive, build 20260927200815. The installer pins its SHA-256 checksum
-and verifies the vendor framework signature without modifying or re-signing
+and verifies the framework signature integrity without modifying or re-signing
 it. The desktop executable is not installed or launched. Framework resources
 remain because the signature binds them. Apple system framework dependencies
 remain part of the Mac runtime.

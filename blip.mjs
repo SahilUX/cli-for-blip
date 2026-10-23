@@ -275,17 +275,21 @@ if (cmd === 'send') {
   // even on case-sensitive volumes rather than risk sending credential data.
   const comparable = (p) => process.platform === 'darwin' ? p.normalize('NFC').toLowerCase() : p;
   const contains = (a, b) => a === b || a.startsWith(`${b}/`) || b.startsWith(a === '/' ? '/' : `${a}/`);
-  const roots = PATHS.protectedData.map(comparable);
+  const desktopData = `${HOME}/Library/Group Containers/AY8UB8KTUX.blip`;
+  let canonicalDesktopData = desktopData;
+  try { canonicalDesktopData = `${realpathSync.native(HOME)}/Library/Group Containers/AY8UB8KTUX.blip`; } catch {}
+  const protectedData = [...PATHS.protectedData, canonicalDesktopData];
+  const roots = protectedData.map(comparable);
   for (const p of abs) {
     // Reject obvious credential paths before resolving them, so a normal send
     // never needs to inspect the protected desktop Group Container.
     if (roots.some((data) => contains(comparable(p), data))) die(`refusing to send ${p}: it contains Blip's own data, including your session`);
     const resolved = comparable(realpathSync.native(p));
-    for (const path of PATHS.protectedData) {
+    for (const path of protectedData) {
       // Resolve our own profile for symlinked HOME/data directories. Leave the
       // desktop Group Container alone: only its known path is compared.
       let data = comparable(path);
-      if (path !== `${HOME}/Library/Group Containers/AY8UB8KTUX.blip`) {
+      if (path !== desktopData && path !== canonicalDesktopData) {
         try { data = comparable(realpathSync.native(path)); } catch {}
       }
       if (contains(resolved, data)) die(`refusing to send ${p}: it contains Blip's own data, including your session`);

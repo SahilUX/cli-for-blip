@@ -436,6 +436,13 @@ test('send protects the active profile and the Mac desktop container through lin
       assert.equal(r.code, 1); assert.match(r.err, /Blip's own data/);
       rmSync(link);
     }
+    const linkedHome = `${home}-link`;
+    symlinkSync(home, linkedHome);
+    try {
+      const desktop = realpathSync.native(join(home, 'Library/Group Containers/AY8UB8KTUX.blip'));
+      const r = await blip(linkedHome, sock, ['send', desktop, '--to', 'Pixel 8']);
+      assert.equal(r.code, 1); assert.match(r.err, /Blip's own data/);
+    } finally { rmSync(linkedHome); }
     assert.equal(st.events.length, 0);
   } finally { done(); }
 });

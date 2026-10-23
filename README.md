@@ -13,13 +13,13 @@ blip logout
 
 ## What you need
 
-- Linux with glibc on x86-64, or macOS on Apple Silicon. macOS support is a preview: native installation, email-code login, lifecycle and authenticated file and folder transfers are verified on macOS 27.0.1. Linux aarch64 and Intel macOS are experimental
+- Linux with glibc on x86-64, or macOS on Apple Silicon. macOS support is a preview: native installation, email-code login, lifecycle and authenticated outgoing file and folder transfers are verified on macOS 27.0.1. Linux aarch64 and Intel macOS are experimental
 - Node.js 22 or newer (`node --version` to check)
 - A C compiler (`cc`), `git`, and `curl` to install. Linux also needs `tar` and `sha256sum`. On Debian or Ubuntu: `sudo apt install build-essential git curl tar coreutils`
 - On macOS, install the Xcode Command Line Tools with `xcode-select --install` if needed. The installer also uses the system `unzip`, `shasum`, and `codesign` commands
 - A Blip account, with Blip also installed on at least one other device you want to send to
 
-The installer downloads the official archive and verifies its pinned SHA-256 checksum. Linux keeps only the native engine library. macOS keeps the intact BlipKit framework and verifies its vendor signature; its `Info.plist` and resources are required for that signature to remain valid. The installer never installs or launches the GUI app. The Mac framework links Apple system frameworks, including AppKit and SwiftUI, but does not open an app window. You still use Blip's proprietary engine and service, so [Blip's terms of service](https://blip.net/terms-of-service) apply. Commercial use requires a Business plan.
+The installer downloads the official archive and verifies its pinned SHA-256 checksum. Linux keeps only the native engine library. macOS keeps the intact BlipKit framework and verifies its signature integrity; its `Info.plist` and resources are required for that signature to remain valid. The installer never installs or launches the GUI app. The Mac framework links Apple system frameworks, including AppKit and SwiftUI, but does not open an app window. You still use Blip's proprietary engine and service, so [Blip's terms of service](https://blip.net/terms-of-service) apply. Commercial use requires a Business plan.
 
 ## Use with an agent
 
@@ -347,7 +347,7 @@ The launcher passes `takeover = 0`, the platform cache and data directories, `ht
 
 `blip.mjs` starts that host as a detached process, waits for a usable socket, and sends `event.SetUserAgent`, which the desktop frontend normally supplies. A start lock keeps concurrent commands from racing that initialization. Before stopping a daemon, the CLI checks its PID, process group and kernel start timestamp. Linux reads `/proc`; macOS asks the native helper for `proc_pidinfo` metadata and checks the UID too. A failed identity lookup does not authorize signalling another process.
 
-`platform.mjs` defines paths and protocol-version metadata. macOS uses a separate CLI profile under `~/Library` because the desktop app's Group Container is privacy-protected. The send guard protects both profiles and handles case variants on Mac filesystems. `drpc.mjs` contains the framing and protobuf walker, using Node's built-in modules rather than an npm RPC or protobuf dependency.
+`platform.mjs` defines paths and protocol-version metadata. macOS uses a separate CLI profile under `~/Library` because the desktop app's Group Container is privacy-protected. The send guard protects both profiles and handles case variants and symlinked home directories on Mac filesystems. `drpc.mjs` contains the framing and protobuf walker, using Node's built-in modules rather than an npm RPC or protobuf dependency.
 
 ### How the RPC protocol works
 
