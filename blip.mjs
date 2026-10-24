@@ -139,8 +139,8 @@ async function start() {
     if (existsSync(LOCK)) { const releaseLock = await lock(); releaseLock(); }
     return false;
   }
-  if (!existsSync(APP)) die(`Blip is not installed at ${APP}. Install it with ${HERE}/install.sh (or set BLIP_APP)`);
   if (!['linux', 'darwin'].includes(process.platform)) die('starting the native Blip core is supported only on Linux and macOS');
+  if (!existsSync(APP)) die(`Blip is not installed at ${APP}. Install it with ${HERE}/install.sh (or set BLIP_APP)`);
   if (!existsSync(LIB)) die(`Blip core is not installed at ${LIB}. Run ${HERE}/install.sh (or set BLIP_LIB)`);
   if (basename(SOCK) !== 'sock') die('native startup requires BLIP_SOCK to end in /sock');
   const maxSocketBytes = process.platform === 'darwin' ? 103 : 107;
@@ -157,8 +157,11 @@ async function start() {
       mkdirSync(path, { recursive: true, mode: 0o700 });
       // These two directories belong to Blip. An existing custom socket
       // directory can hold unrelated files, so preserve its permissions.
-      if (path === DATA || path === PATHS.cache) chmodSync(path, 0o700);
+      if (path === DATA || path === resolve(PATHS.cache)) chmodSync(path, 0o700);
     }
+    // The engine keeps its cache next to its socket, so no one else may write there.
+    const dir = statSync(dirname(SOCK));
+    if (!dir.isDirectory() || dir.uid !== process.getuid() || dir.mode & 0o022) die(`refusing ${dirname(SOCK)} for BLIP_SOCK: Blip keeps its cache there, so it must be a folder you own that no one else can write to`);
     const log = openSync(LOG, 'a', 0o600);                                             // append mode for native diagnostics
     process.umask(process.umask(0o022) | 0o022);                                           // the app creates its socket under this umask: no one else may write to (connect to) it
     const child = spawn(argv[0], argv.slice(1), { cwd: HOME, env: { ...process.env, TMPDIR: TMP }, detached: true, stdio: ['ignore', log, log] });
@@ -273,7 +276,8 @@ if (cmd === 'send') {
   for (const p of abs) { const st = statSync(p); if (!(st.isFile() || st.isDirectory()) || sys(p) || sys(realpathSync(p))) die(`refusing to send ${p}: not a regular file or folder`); }
   // Darwin volumes commonly ignore case and normalize Unicode. Be conservative
   // even on case-sensitive volumes rather than risk sending credential data.
-  const comparable = (p) => process.platform === 'darwin' ? p.normalize('NFC').toLowerCase() : p;
+  // realpath keeps the /System/Volumes/Data firmlink and the /.nofollow prefix, which name the same files.
+  const comparable = (p) => process.platform === 'darwin' ? p.normalize('NFC').toLowerCase().replace(/^\/\.nofollow(?=\/|$)/, '').replace(/^\/system\/volumes\/data(?=\/|$)/, '') || '/' : p;
   const contains = (a, b) => a === b || a.startsWith(`${b}/`) || b.startsWith(a === '/' ? '/' : `${a}/`);
   const desktopData = `${HOME}/Library/Group Containers/AY8UB8KTUX.blip`;
   let canonicalDesktopData = desktopData;
@@ -298,12 +302,14 @@ if (cmd === 'send') {
 }
 
 if (cmd === 'stop') { await stop(); process.exit(0); }
-if (cmd === 'status' && !(await reachable())) { console.log('Blip is not running (run: blip start)'); process.exit(1); }
-const started = await start();
+// status reads the state once and never starts Blip, even if it stops between two calls.
+const current = cmd === 'status' && await getState().catch((e) => { if (e.syscall === 'connect' && ['ENOENT', 'ECONNREFUSED'].includes(e.code)) return null; throw e; });
+if (cmd === 'status' && !current) { console.log('Blip is not running (run: blip start)'); process.exit(1); }
+const started = cmd !== 'status' && await start();
 if (cmd === 'start') {
   console.error(started ? 'Blip is running in the background' : 'Blip is already running');
 } else if (cmd === 'status') {
-  const me = session(await getState());
+  const me = session(current);
   console.log(`Blip is running${ownPid() ? ' in the background' : ''}`);
   console.log(me.email ? `signed in as ${safe(me.email)}` : 'not signed in (run: blip login)');
 } else if (cmd === 'login') {

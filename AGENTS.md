@@ -19,13 +19,20 @@ the official archive, verifying its SHA-256 checksum. No GUI app is installed.
   removes that device again.
 - macOS uses its own CLI profile under ~/Library; leave the desktop app
   Group Container and session untouched. Real Mac login and transfer tests
-  need that CLI profile signed in. Intel macOS remains experimental.
+  need a signed-in CLI profile: create one under a throwaway `HOME` with a
+  distinct `--name` and log it out afterwards. Never use the user's own
+  `~/Library/Application Support/blip-cli` profile. Apple Foundation APIs
+  ignore `$HOME`, so a throwaway `HOME` isolates only the paths `blip` passes
+  to the engine. Intel macOS remains experimental.
 - Before migrating a Linux desktop service, stop it and replace its desktop launch
   command. The installer changes `~/.local/bin/blip` to the CLI; keep the
   existing data directory to preserve the session and device identity.
 - Linux engine pins are 1.2.6; macOS pins are 1.2.3. Keep the Mac framework
   signature valid by retaining its Info.plist and resources. Verify hosting, shutdown
-  and RPC compatibility before changing either pin.
+  and RPC compatibility before changing either pin. The pins live in
+  `install.sh` (version, URL, SHA-256), `platform.mjs` (`engineVersion`, sent
+  to Blip), `README.md`, `LEGAL.md` and the `native/host.c` header comment;
+  change them together.
 - When you change a message, exit code or default in `blip.mjs`, update the
   matching text in `README.md`.
 

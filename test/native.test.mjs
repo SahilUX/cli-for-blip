@@ -21,7 +21,7 @@ test('native host checks the ABI, passes hosting arguments and stops gracefully'
     assert.equal(id.status, 0);
     assert.match(id.stdout, new RegExp(`^${process.pid} [0-9]+ [0-9]+:[0-9]+\\n$`));
     for (const invalid of ['0', '-1', 'not-a-pid']) assert.equal(spawnSync(host, ['--identity', invalid]).status, 2);
-    assert.notEqual(spawnSync(host, ['--identity', '1']).status, 0);
+    assert.equal(spawnSync(host, ['--identity', '1']).status, 4);                   // another user's process is not ours
   }
   writeFileSync(join(dir, 'fake.c'), `
 #include <stdio.h>

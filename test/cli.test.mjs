@@ -296,6 +296,34 @@ test('status does not start Blip', async () => {
   assert.equal(r.err, '');
 });
 
+test('status reads Blip once and never starts it, even if Blip stops meanwhile', async () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'blip-cli-test-')));
+  const sock = join(home, 'sock'), app = join(home, 'app'), launched = join(home, 'launched');
+  writeFileSync(app, `#!/bin/sh\ntouch '${launched}'\n`, { mode: 0o700 });
+  const reply = Buffer.concat([frame(2, 1, encodeState({ users: [], transfers: [] })), frame(6, 2, Buffer.alloc(0))]);
+  const server = net.createServer((c) => { c.on('error', () => {}); c.once('data', () => { c.end(reply); server.close(); }); });
+  await new Promise((r) => server.listen(sock, r));
+  const r = await blip(home, sock, ['status'], { BLIP_APP: app, BLIP_LIB: app });
+  const started = existsSync(launched);
+  rmSync(home, { recursive: true, force: true });
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.out, 'Blip is running\nnot signed in (run: blip login)\n');
+  assert.equal(started, false, 'status must not launch Blip');
+});
+
+test('native startup refuses a socket folder that others can write to', { skip: !['linux', 'darwin'].includes(process.platform) }, async () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'blip-cli-test-')));
+  const shared = join(home, 'shared'), app = join(home, 'app'), launched = join(home, 'launched');
+  mkdirSync(shared); chmodSync(shared, 0o777);
+  writeFileSync(app, `#!/bin/sh\ntouch '${launched}'\n`, { mode: 0o700 });
+  const r = await blip(home, join(shared, 'sock'), ['start'], { BLIP_APP: app, BLIP_LIB: app });
+  const started = existsSync(launched);
+  rmSync(home, { recursive: true, force: true });
+  assert.equal(r.code, 1);
+  assert.equal(r.err, `refusing ${shared} for BLIP_SOCK: Blip keeps its cache there, so it must be a folder you own that no one else can write to\n`);
+  assert.equal(started, false);
+});
+
 test('transfers reports an unknown id, and devices escapes control characters in names', async () => {
   const st = { email: 'me@example.com', users: [{ ...ME, devices: [{ id: 'dev-here', name: 'evil\x1b[2Jname', here: true }] }] };
   st.transfers = [{ id: 't1', status: 9 }];
@@ -435,6 +463,13 @@ test('send protects the active profile and the Mac desktop container through lin
       const r = await blip(home, sock, ['send', link, '--to', 'Pixel 8']);
       assert.equal(r.code, 1); assert.match(r.err, /Blip's own data/);
       rmSync(link);
+    }
+    if (process.platform === 'darwin') {
+      // realpath keeps the Data volume firmlink and the /.nofollow prefix, which name the same files.
+      for (const alias of [`/System/Volumes/Data${paths(home).data}`, `/.nofollow${paths(home).data}`, `/System/Volumes/Data${home}`, '/System/Volumes/Data']) {
+        const r = await blip(home, sock, ['send', alias, '--to', 'Pixel 8']);
+        assert.equal(r.code, 1, alias); assert.match(r.err, /Blip's own data/, alias);
+      }
     }
     const linkedHome = `${home}-link`;
     symlinkSync(home, linkedHome);

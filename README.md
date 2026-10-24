@@ -45,7 +45,7 @@ Make sure `~/.local/bin` is on your `PATH`. On Debian and Ubuntu, `~/.profile` a
 
 To update the CLI, pull this repository and run `./install.sh` again. A running engine keeps its old code until you run `blip stop` and `blip start`. Updating the engine version requires verifying its native ABI and protocol and changing the installer pins.
 
-Don't move or delete the clone while `blip` is installed. If you move it, relink from the new place with `ln -sfn "$PWD/blip.mjs" ~/.local/bin/blip`. Running `./install.sh` there also works, but it updates Blip too.
+Don't move or delete the clone while `blip` is installed. If you move it, relink from the new place with `ln -sfn "$PWD/blip.mjs" ~/.local/bin/blip`. Running `./install.sh` there also works; it downloads and reinstalls the pinned engine.
 
 ## Platform paths
 
@@ -58,9 +58,9 @@ Don't move or delete the clone while `blip` is installed. If you move it, relink
 | Log, PID, start lock, temporary files | `~/.cache/blip-cli` | `~/Library/Caches/blip-cli` |
 | Remembered device | `~/.config/blip-cli/config.json` | `~/Library/Application Support/blip-cli/config.json` |
 
-An absolute `XDG_CONFIG_HOME` overrides the remembered-device directory on either platform. `BLIP_APP`, `BLIP_LIB`, and `BLIP_SOCK` override the host, library, and socket paths.
+An absolute `XDG_CONFIG_HOME` overrides the remembered-device directory on either platform. `BLIP_APP`, `BLIP_LIB`, and `BLIP_SOCK` override the host, library, and socket paths. The socket's directory is also the engine's cache directory.
 
-The Mac CLI has its own profile. The CLI does not read or migrate the desktop app's credential files in its protected Group Container, and does not stop that app. Run `blip login --name "Mac CLI"` to register a separate device. Keep the desktop app if you want its GUI as well.
+The Mac CLI has its own profile. The CLI does not read or migrate the desktop app's credential files in its protected Group Container, and does not stop that app. Run `blip login --name "Mac CLI"` to register a separate device. Keep the desktop app if you want its GUI as well. Unlike the desktop app's Group Container, the CLI profile is protected only by Unix permissions (mode 700), like the Linux profile.
 
 ## Uninstall
 
@@ -73,7 +73,7 @@ rm ~/.local/bin/blip
 rm -rf ~/.cache/blip-cli "${XDG_CONFIG_HOME:-$HOME/.config}/blip-cli"
 ```
 
-Remove the installed native runtime with `rm -rf ~/.local/lib/blip-cli`. On macOS, also remove `~/Library/Caches/blip-cli` and the remembered-device `config.json` listed above. The engine profile remains in the platform data directory; delete that directory only if you want to remove it too. We have not audited every Apple system storage location the proprietary framework may use.
+Remove the installed native runtime with `rm -rf ~/.local/lib/blip-cli`. On macOS, also remove `~/Library/Caches/blip-cli` and the remembered-device `config.json` listed above. The engine profile remains in the platform data directory; delete that directory only if you want to remove it too. On Linux the engine also keeps its cache and socket in `~/.cache/net.blip.Blip`, which it shares with the desktop app; remove it together with the data directory. We have not audited every Apple system storage location the proprietary framework may use.
 
 ## Sign in
 
@@ -101,7 +101,7 @@ The session survives restarts, so you sign in once. On macOS this is separate fr
 
 ## The background app
 
-Every command except `status` and `stop` starts the native engine if it isn't running yet. A detached `blip-core` process loads the library directly. It keeps running after the command exits, so later commands are fast and your other devices can reach this one. No desktop login or display is needed.
+Every command except `status` and `stop` starts the native engine if it isn't running yet. A detached `blip-core` process loads the library directly. It keeps running after the command exits, so later commands are fast and your other devices can reach this one. On Linux, no desktop login or display is needed. On macOS, unattended and SSH use have not been verified (see [macOS file access](#macos-file-access)).
 
 ```sh
 blip status   # is Blip running (exit code 1 if not), and who is signed in
@@ -113,9 +113,11 @@ The engine's output goes to `app.log` in the platform log directory listed above
 
 The app inherits the environment of the command that starts it, so start it from a shell that doesn't hold secrets you don't want it to see. `blip` starts it with a umask that keeps other users from writing to, and so connecting to, its socket.
 
+When `blip` starts the engine, and again at `login`, it sends the engine a user agent with your OS name and kernel release, as the desktop app does, and names the client `blip-cli`. The engine appears to pass this on to Blip's servers, so Blip can tell that this device uses an unofficial client.
+
 While the app runs, this machine is a Blip device like any other, and it receives as well as sends. Depending on the app's auto-accept setting, transfers from your own devices may be saved here without a prompt and with no size limit. `blip` can't accept, decline or cancel transfers or change that setting, and `blip transfers` lists incoming ones only as `in`. If you only want to send, run `blip stop` when you're done. Every command except `status` and `stop` starts the app again.
 
-If Blip is already running some other way and answers on its socket, for example as a systemd service or in a desktop session, `blip` uses that instance. Native startup never asks the engine to take over another instance. Don't run `blip` while such an instance is still starting up, or `blip` starts a second one. `blip stop` only stops an instance that `blip` started.
+On Linux, if Blip is already running some other way and answers on its socket, for example as a systemd service or in a desktop session, `blip` uses that instance. On macOS the desktop app uses its own profile and socket, so `blip` always runs its own engine. Native startup never asks the engine to take over another instance. Don't run `blip` while such an instance is still starting up, or `blip` starts a second one. `blip stop` only stops an instance that `blip` started.
 
 On Linux, to start Blip at boot, add this line to your crontab (`crontab -e`):
 
@@ -182,7 +184,7 @@ A few rules about the device:
 
 - Every path has to exist. A missing one stops the command with `not found: <absolute path>`.
 - An empty argument, such as an unset shell variable, stops it with `empty path (an unset variable?)` and exit code 2.
-- `send` refuses Blip's own data folder, anything in it, and any folder that contains it, such as `~` or `/`. That folder holds your session. The message is `refusing to send <path>: it contains Blip's own data, including your session`.
+- `send` refuses Blip's own data folders (this CLI's profile and, on macOS, the desktop app's Group Container), anything in them, and any folder that contains them, such as `~` or `/`. Those folders hold your session. The message is `refusing to send <path>: it contains Blip's own data, including your session`. The check compares paths, so it can't recognize copies or hard links of that data elsewhere.
 - Devices, FIFOs, sockets, and anything under `/dev`, `/proc` or `/sys`, or reached through a link there such as `/dev/stdin`, stop it with `refusing to send <path>: not a regular file or folder`. This only covers the paths you name, not what is inside a folder you send.
 - A file whose name looks like an option, such as `--help`, stops the command with exit code 2. When paths come from a glob or a script, put them after `--`: `blip send --to "Pixel 8" -- *`.
 
@@ -223,9 +225,9 @@ Control characters in names, ids, and error texts from Blip are printed as `\uXX
 | `BLIP_TO` | | Device `send` uses when there is no `--to` |
 | `BLIP_TIMEOUT_S` | `300` | Seconds `send` waits for completion before exiting with code 3. Must be a positive number |
 | `BLIP_DEVICE_NAME` | hostname up to the first dot | Device name `login` registers, unless `--name` is given |
-| `BLIP_APP` | `~/.local/lib/blip-cli/blip-core` | Path of the native host executable, which takes library, cache directory, and data directory arguments |
+| `BLIP_APP` | `~/.local/lib/blip-cli/blip-core` | Path of the native host executable, which takes library, cache directory, and data directory arguments. On macOS it must also answer `--identity <pid>`, as the installed `blip-core` does |
 | `BLIP_LIB` | See platform paths | Path of the native library or intact Mac framework binary |
-| `BLIP_SOCK` | See platform paths | Path of the Blip socket. It must be a socket you own. Native startup requires the basename `sock` |
+| `BLIP_SOCK` | See platform paths | Path of the Blip socket. It must be a socket you own. Native startup requires the basename `sock`. Its directory is also the engine's cache directory, so it must be a folder you own that no one else can write to; `blip` creates a missing one with mode 700 |
 | `XDG_CONFIG_HOME` | See platform paths | An absolute override keeps the remembered device in `$XDG_CONFIG_HOME/blip-cli/config.json` |
 
 Whatever answers on `BLIP_SOCK` sees your email, your sign-in code, and the paths you send. Anyone who can connect to the socket can read your Blip session.
@@ -257,9 +259,9 @@ tail -50 ~/.cache/blip-cli/app.log  # Linux; use ~/Library/Caches/blip-cli/app.l
 
 The log holds everything the engine prints. It may include sign-in events, your email address, device names and ids, file names, and network addresses. Treat it as private and remove sensitive data before sharing an excerpt.
 
-`Blip is not installed` means the native host executable is missing. `Blip core is not installed` means the native library is missing. Run `./install.sh`, or point `BLIP_APP` and `BLIP_LIB` at the installed native host and library. `BLIP_APP` no longer accepts the desktop executable.
+`Blip is not installed` means the native host executable is missing. `Blip core is not installed` means the native library is missing. Run `./install.sh`, or point `BLIP_APP` and `BLIP_LIB` at the installed native host and library. `BLIP_APP` must point at the native host `blip-core`. If you set it to the old desktop executable, unset it: `blip` would run that program with native-host arguments.
 
-`starting the native Blip core is supported only on Linux and macOS` means you attempted automatic startup on an unsupported OS. `native startup requires BLIP_SOCK to end in /sock` means the engine cannot use the chosen socket filename. `Blip socket path is too long` means the path exceeds the OS limit; set `BLIP_SOCK` to a shorter path ending in `/sock`. An existing socket with another filename can still be used.
+`starting the native Blip core is supported only on Linux and macOS` means you attempted automatic startup on an unsupported OS. `native startup requires BLIP_SOCK to end in /sock` means the engine cannot use the chosen socket filename. `Blip socket path is too long` means the path exceeds the OS limit; set `BLIP_SOCK` to a shorter path ending in `/sock`, in a folder only you can write to (not `/tmp`). An existing socket with another filename can still be used. `refusing <folder> for BLIP_SOCK: Blip keeps its cache there, so it must be a folder you own that no one else can write to` means another user owns that folder or others can write to it. Use a folder of your own, for example `mkdir -m 700 ~/blip` and `BLIP_SOCK=$HOME/blip/sock`.
 
 The app log reports native loading errors, including `could not load Blip core` and `unsupported Blip core: missing hosting symbols`. Check that the library matches the host architecture and supported Blip version. The installer checks both hosting symbols before activating it. On macOS, a process-identity helper failure preserves the PID record and prints `could not verify Blip process`; check `BLIP_APP` or reinstall the native host, then retry `stop`.
 
@@ -345,9 +347,9 @@ void libblip_host_stop(void);
 
 The launcher passes `takeover = 0`, the platform cache and data directories, `https://prod.blip.net`, and a null optional signaller. The engine owns its RPC socket, session persistence, and transfers. SIGINT and SIGTERM set a flag; the launcher's main loop then calls `libblip_host_stop` outside the signal handler. It exits without unloading Go code while engine threads might still use it.
 
-`blip.mjs` starts that host as a detached process, waits for a usable socket, and sends `event.SetUserAgent`, which the desktop frontend normally supplies. A start lock keeps concurrent commands from racing that initialization. Before stopping a daemon, the CLI checks its PID, process group and kernel start timestamp. Linux reads `/proc`; macOS asks the native helper for `proc_pidinfo` metadata and checks the UID too. A failed identity lookup does not authorize signalling another process.
+`blip.mjs` starts that host as a detached process, waits for a usable socket, and sends `event.SetUserAgent`, which the desktop frontend normally supplies. A start lock keeps concurrent commands from racing that initialization. Before stopping a daemon, the CLI checks its PID, process group and kernel start timestamp. Linux reads `/proc`; macOS asks the native helper for `sysctl` process metadata and checks the UID too. A failed identity lookup does not authorize signalling another process.
 
-`platform.mjs` defines paths and protocol-version metadata. macOS uses a separate CLI profile under `~/Library` because the desktop app's Group Container is privacy-protected. The send guard protects both profiles and handles case variants and symlinked home directories on Mac filesystems. `drpc.mjs` contains the framing and protobuf walker, using Node's built-in modules rather than an npm RPC or protobuf dependency.
+`platform.mjs` defines paths and protocol-version metadata. macOS uses a separate CLI profile under `~/Library` because the desktop app's Group Container is privacy-protected. The send guard protects both profiles and handles case variants, symlinked home directories, and the `/System/Volumes/Data` and `/.nofollow` spellings of the same paths on Mac filesystems. `drpc.mjs` contains the framing and protobuf walker, using Node's built-in modules rather than an npm RPC or protobuf dependency.
 
 ### How the RPC protocol works
 
@@ -358,7 +360,7 @@ DRPC frames look like this: `control byte | varint stream | varint message | var
 | `/rpc.Service/GetState` | returns a message whose field 2 is `State`. The session is a oneof of `Registration` (tag 200, signed out) and `Auth` (tag 201, signed in). Devices are under `State.users` (tag 500) and transfers under tag 600 |
 | `/rpc.Service/Dispatch` | takes `DispatchRequest{event: Any}` |
 
-Signing in is two events: `event.SendRegistrationCodeRequested{email, device_name}`, then `event.RegistrationRequested{code, device_dedupe_id, device_name, device_kind}`. `Registration.status` goes 0 NotStarted, 1 SendingCode, 2 CodeSent, 3 Registering, and errors land in `Registration.error` (tag 999). The dedupe id is the first 36 characters of `~/.local/share/net.blip.Blip/hardwareinfo/device-dedupe-id.txt`, the file the app itself uses, so signing in again replaces this device instead of adding one. If the file doesn't exist yet, `blip login` creates it with a new random UUID. If it doesn't start with a UUID, `login` stops and names the file. Signing out is `event.RemoveDeviceThenLogout{}`.
+Signing in is two events: `event.SendRegistrationCodeRequested{email, device_name}`, then `event.RegistrationRequested{code, device_dedupe_id, device_name, device_kind}`. `Registration.status` goes 0 NotStarted, 1 SendingCode, 2 CodeSent, 3 Registering, and errors land in `Registration.error` (tag 999). The dedupe id is the first 36 characters of `hardwareinfo/device-dedupe-id.txt` in the session data directory (see [Platform paths](#platform-paths)), so signing in again replaces this device instead of adding one. On Linux it is the file the desktop app uses too; on macOS it belongs to the separate CLI profile. If the file doesn't exist yet, `blip login` creates it with a new random UUID. If it doesn't start with a UUID, `login` stops and names the file. Signing out is `event.RemoveDeviceThenLogout{}`.
 
 Sending is three events: `event.TransferCreateRequested{transfer_id, peer_id}`, `event.TransferAddContentRequested{transfer_id, locations[]}` and `event.TransferInviteRequested{transfer_id, peer_id}`, where `blip.PeerId{user_id, device_id}`. Transfer status (tag 800): 1 Created, 2 InviteRequested, 3 Invited, 4 Pending, 5 Active, 6 Paused, 7 ResumeRequested, 8 Completed, 9 Cancelled.
 
@@ -368,7 +370,7 @@ The method names and field numbers come from the Wire-generated protobuf classes
 
 This depends on undocumented internals. A Blip update may change method names or field numbers. `blip` then stops with `unexpected reply from Blip` or `can't tell which devices are yours` rather than guessing, until someone updates it for the new version.
 
-Never print raw `GetState` output or read `~/.local/share/net.blip.Blip/state.dat`. Both hold session credentials for the signed-in account.
+Never print raw `GetState` output or read `state.dat` in the session data directory (`~/.local/share/net.blip.Blip` on Linux, `~/Library/Application Support/blip-cli/engine` on macOS). Both hold session credentials for the signed-in account.
 
 ## Development
 
