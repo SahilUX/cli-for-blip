@@ -3,18 +3,16 @@
 #ifdef __APPLE__
 #define _DARWIN_C_SOURCE
 #endif
-#define _POSIX_C_SOURCE 200809L
+#define _XOPEN_SOURCE 700
 #include <dlfcn.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 #ifdef __APPLE__
-#include <libproc.h>
-#include <errno.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <sys/proc.h>
+#include <sys/sysctl.h>
 #endif
 
 static volatile sig_atomic_t stopping;
@@ -28,16 +26,15 @@ int main(int argc, char **argv) {
         char *end;
         long pid = strtol(argv[2], &end, 10);
         if (*end || pid <= 0 || pid > 2147483647L) return 2;
-        struct proc_bsdinfo info;
-        if (proc_pidinfo((int)pid, PROC_PIDTBSDINFO, 0, &info, sizeof(info)) != sizeof(info)) {
-            // libproc does not reliably set errno for an absent PID. A failed
-            // existence probe distinguishes it from unavailable metadata.
-            if (kill((int)pid, 0) == -1 && errno == ESRCH) return 4;
-            return 3;
-        }
-        if (info.pbi_uid != getuid() || info.pbi_status == SZOMB) return 4;
-        printf("%u %u %llu:%llu\n", info.pbi_pid, info.pbi_pgid,
-               (unsigned long long)info.pbi_start_tvsec, (unsigned long long)info.pbi_start_tvusec);
+        // Unlike proc_pidinfo, sysctl also describes other users' processes
+        // and zombies, so a reused PID reads as "not ours" instead of an error.
+        int name[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)pid};
+        struct kinfo_proc info;
+        size_t length = sizeof(info);
+        if (sysctl(name, 4, &info, &length, NULL, 0) != 0) return 3;
+        if (length == 0 || info.kp_eproc.e_ucred.cr_uid != getuid() || info.kp_proc.p_stat == SZOMB) return 4;
+        printf("%d %d %llu:%llu\n", info.kp_proc.p_pid, info.kp_eproc.e_pgid,
+               (unsigned long long)info.kp_proc.p_starttime.tv_sec, (unsigned long long)info.kp_proc.p_starttime.tv_usec);
         return 0;
     }
 #endif
@@ -61,6 +58,8 @@ int main(int argc, char **argv) {
 
     struct sigaction action = {0};
     action.sa_handler = request_stop;
+    // Go's c-shared runtime needs SA_ONSTACK on handlers installed after it loads.
+    action.sa_flags = SA_ONSTACK;
     sigemptyset(&action.sa_mask);
     if (sigaction(SIGTERM, &action, NULL) || sigaction(SIGINT, &action, NULL)) {
         perror("could not install Blip core signal handlers");

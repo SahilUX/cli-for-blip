@@ -76,7 +76,7 @@ curl --fail --silent --show-error --location --retry 3 --output "$work/archive" 
 if [[ $os == Linux ]]; then
   printf '%s  %s\n' "$sha" "$work/archive" | sha256sum --check --status ||
     { echo 'Blip archive SHA-256 does not match' >&2; exit 1; }
-  tar -xOzf "$work/archive" blip-1.2.6/lib/runtime/lib/libblip-jni.so > "$work/next/$library"
+  tar -xOzf "$work/archive" "blip-$version/lib/runtime/lib/libblip-jni.so" > "$work/next/$library"
 else
   actual=$(shasum -a 256 "$work/archive")
   [[ ${actual%% *} == "$sha" ]] || { echo 'Blip archive SHA-256 does not match' >&2; exit 1; }
@@ -91,6 +91,9 @@ fi
 printf '%s\n' "$version" > "$work/next/.blip-cli-install"
 chmod u+x "$here/blip.mjs"
 ln -s -- "$here/blip.mjs" "$work/cli-link"
+# Each rename and the flag that records it must happen together, so hold
+# Ctrl-C and TERM until the new runtime and link are both in place.
+trap '' INT TERM
 if [[ -d $runtime ]]; then
   mv -- "$runtime" "$work/previous"
   had_previous=true
@@ -103,6 +106,8 @@ else
   mv -Tf -- "$work/cli-link" "$link"
 fi
 committed=true
+trap 'exit 130' INT
+trap 'exit 143' TERM
 [[ :$PATH: == *":$HOME/.local/bin:"* ]] || echo 'note: add ~/.local/bin to your PATH to run blip' >&2
 echo 'blip is installed with the native engine. Next: blip login'
 if [[ $os == Linux ]]; then

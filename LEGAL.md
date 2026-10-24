@@ -6,11 +6,11 @@ Reviewed on October 17, 2026 against [Blip's official terms of service](https://
 
 [Blip](https://blip.net/) is provided by Blip Studio Inc. Its terms reserve rights to Blip, including its trademarks and content. They grant a limited license for Blip's intended purpose and restrict trademark use without permission. They require a Business plan for commercial activities.
 
-This project is independent and unofficial. Blip Studio Inc. has not affiliated with or endorsed it. The project's [MIT license](LICENSE) covers this repository's code and documentation. It does not grant rights to Blip's proprietary app, services, trademarks, or content. Download the app from Blip and comply with its terms separately.
+This project is independent and unofficial. Blip Studio Inc. has not affiliated with or endorsed it. The project's [MIT license](LICENSE) covers this repository's code and documentation. It does not grant rights to Blip's proprietary app, services, trademarks, or content. The installer downloads Blip's official archive from Blip's server; use of Blip remains subject to its terms.
 
 ## What the source review found
 
-The tracked source at the time of review consists of a Node.js CLI, a small JavaScript DRPC/protobuf implementation, a shell installer, and documentation. The current source and the initial DRPC implementation were inspected. No Blip binaries, jars, logos, generated schema classes, or decompiled method bodies were found among those files. The installer retrieves the official installer from Blip's server at runtime rather than bundling the app.
+The tracked source at the time of review consists of a Node.js CLI, a small JavaScript DRPC/protobuf implementation, a shell installer, and documentation. The current source and the initial DRPC implementation were inspected. No Blip binaries, jars, logos, generated schema classes, or decompiled method bodies were found among those files. At that review, the installer ran Blip's official installer from Blip's server rather than bundling the app. It now downloads Blip's official archive itself and keeps only the native engine (Linux) or the signed BlipKit framework (macOS); see the sections below.
 
 The README and source identify Blip 1.2.6 as the reverse-engineering target. The CLI contains RPC method names, event names, field numbers, enum values, and an app-specific device identifier path obtained from that interface. A sentence accompanying a newly generated device identifier appeared to reproduce the app's explanatory text. It was removed, leaving a UUID followed by a newline. The reader already consumes only the first 36 characters.
 
@@ -30,8 +30,9 @@ checksum and extracts only that library. It does not redistribute the library
 in this repository or install the desktop app and JVM.
 
 REA 6.7.0 supplied Go build information and GNU objdump disassembly for the
-native library. Java API inspection supplied matching hosting arguments and
-user-agent message fields. The small C launcher in `native/host.c` was written
+native library. Java API and `javap` bytecode listings of the desktop jars,
+including the desktop app's startup code, supplied matching hosting arguments,
+the server address and user-agent message fields. The small C launcher in `native/host.c` was written
 for this project using the exported C interface. No decompiled implementation
 bodies, generated schema classes, or Blip binary assets are committed.
 
