@@ -113,7 +113,7 @@ The engine's output goes to `app.log` in the platform log directory listed above
 
 The app inherits the environment of the command that starts it, so start it from a shell that doesn't hold secrets you don't want it to see. `blip` starts it with a umask that keeps other users from writing to, and so connecting to, its socket.
 
-When `blip` starts the engine, and again at `login`, it sends the engine a user agent with your OS name and kernel release, as the desktop app does, and names the client `blip-cli`. The engine appears to pass this on to Blip's servers, so Blip can tell that this device uses an unofficial client.
+When `blip` starts the engine, and again at `login`, it sends the engine a user agent with your OS name and kernel release, as the desktop app does, and names the client `blip-cli` (app id `io.github.sahilux.blip-cli`). The engine appears to pass this on to Blip's servers, so Blip can tell that this device uses an unofficial client.
 
 While the app runs, this machine is a Blip device like any other, and it receives as well as sends. Depending on the app's auto-accept setting, transfers from your own devices may be saved here without a prompt and with no size limit. `blip` can't accept, decline or cancel transfers or change that setting, and `blip transfers` lists incoming ones only as `in`. If you only want to send, run `blip stop` when you're done. Every command except `status` and `stop` starts the app again.
 

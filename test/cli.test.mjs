@@ -218,6 +218,7 @@ test('login reads piped answers, and stops cleanly when the input ends', async (
   const eof = await blip(home, sock, ['login', 'me@example.com'], { BLIP_DEVICE_NAME: ' ' }, { input: '' });
   const agent = fields(st.events.find((e) => e.name === 'SetUserAgent').ev[0].value);
   assert.equal(agent.find((f) => f.tag === 102).value, 5);
+  assert.equal(str(agent.find((f) => f.tag === 300)), 'io.github.sahilux.blip-cli');
   assert.equal(str(agent.find((f) => f.tag === 301)), 'blip-cli');
   const sentName = str(st.events.find((e) => e.name === 'SendRegistrationCodeRequested').ev.find((f) => f.tag === 2));
   st.reg = 0;
