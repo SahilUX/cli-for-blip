@@ -78,9 +78,11 @@ const dispatch = (name, msg = Buffer.alloc(0)) => {                             
 };
 
 // The desktop frontend normally supplies this after connecting. A headless host
-// needs it too, especially before registering a fresh device.
+// needs it too, especially before registering a fresh device. The app id is this
+// project's own, not one in Blip's net.blip namespace. The version is the
+// engine's, because that is the protocol Blip's servers actually talk to.
 const initializeCore = () => dispatch('SetUserAgent', ld(1, Buffer.concat([
-  vi(102, 5), s(200, type()), s(201, release()), s(300, 'net.blip.blip-cli'),
+  vi(102, 5), s(200, type()), s(201, release()), s(300, 'io.github.sahilux.blip-cli'),
   s(301, 'blip-cli'), s(302, PATHS.engineVersion),
 ])));
 
