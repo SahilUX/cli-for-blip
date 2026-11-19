@@ -30,7 +30,8 @@ function encodeState(st) {
   const users = (st.users ?? []).map((u) => ld(1, Buffer.concat([s(1, u.id), ld(2, Buffer.concat([vi(10, u.self ? 1 : 0),
     ...u.devices.map((d) => ld(7, Buffer.concat([s(1, d.id), ld(2, Buffer.concat([s(1, d.id), s(3, d.name), vi(6, d.here ? 1 : 0)]))])))]))])));
   parts.push(ld(500, Buffer.concat(users)));
-  for (const t of st.transfers) parts.push(ld(600, Buffer.concat([s(1, t.id), ld(2, Buffer.concat([vi(700, 2), vi(800, t.status)]))])));
+  if (st.config) parts.push(ld(100, Buffer.concat([vi(2, st.config.autoAcceptDisabled ? 1 : 0), ...(st.config.folder ? [s(4, st.config.folder)] : [])])));
+  for (const t of st.transfers) parts.push(ld(600, Buffer.concat([s(1, t.id), ld(2, Buffer.concat([vi(700, t.direction ?? 2), vi(800, t.status), ...(t.saved ? [s(501, t.saved)] : []), ...(t.err ? [ld(600, s(2, t.err))] : [])]))])));
   return ld(2, Buffer.concat(parts));
 }
 
@@ -61,6 +62,9 @@ async function fakeBlip(dir, st, { garbage = false } = {}) {
         st.events.push({ name, ev });
         if (name === 'TransferCreateRequested') st.transfers.push({ id: str(ev[0]), status: st.newStatus });
         if (name === 'TransferInviteRequested' && st.failAfterInvite) st.failing = true;
+        const acted = st.transfers.find((t) => ev[0] && t.id === str(ev[0]));
+        if (acted && name === 'TransferAcceptanceRequested' && st.afterAccept) acted.status = st.afterAccept;
+        if (acted && name === 'TransferDeclineRequested') st.transfers.splice(st.transfers.indexOf(acted), 1);
         if (name === 'SendRegistrationCodeRequested') st.reg = 2;      // CodeSent
         if (name === 'RegistrationRequested' && str(ev[0]) === '123456') st.email = 'me@example.com';
         return c.write(Buffer.concat([frame(2, 1, Buffer.alloc(0)), frame(6, 2, Buffer.alloc(0))]));
@@ -481,4 +485,120 @@ test('send protects the active profile and the Mac desktop container through lin
     } finally { rmSync(linkedHome); }
     assert.equal(st.events.length, 0);
   } finally { done(); }
+});
+
+const IN = (id, status = 3, extra = {}) => ({ id, status, direction: 1, ...extra });
+
+test('every command makes the folder incoming files go to, since the engine fails on a missing one', async () => {
+  const st = { email: 'me@example.com', users: [ME] };
+  const { home, sock, done } = await setup(st);
+  const r = await blip(home, sock, ['devices']);
+  const made = existsSync(join(home, 'Downloads'));
+  st.config = { folder: join(home, 'elsewhere/in') };
+  const r2 = await blip(home, sock, ['devices']);
+  const custom = existsSync(join(home, 'elsewhere/in'));
+  done();
+  assert.equal(r.code, 0); assert.equal(r2.code, 0);
+  assert.ok(made); assert.ok(custom);
+  assert.match(r.err, /created .*Downloads for incoming files/);
+});
+
+test('a folder that cannot be made is a warning, not a failure', async () => {
+  const st = { email: 'me@example.com', users: [ME] };
+  const { home, sock, done } = await setup(st);
+  writeFileSync(join(home, 'Downloads'), 'a file in the way');
+  const r = await blip(home, sock, ['devices']);
+  done();
+  assert.equal(r.code, 0);
+  assert.match(r.err, /warning: can't use .*Downloads for incoming files/);
+});
+
+test('accept sends the transfer id, and --dir adds the folder', async () => {
+  const st = { email: 'me@example.com', users: [ME], transfers: [IN('t1'), IN('t2')], afterAccept: 5 };
+  const { home, sock, done } = await setup(st);
+  const a = await blip(home, sock, ['accept', 't1']);
+  const b = await blip(home, sock, ['accept', 't2', '--dir', 'got']);
+  done();
+  assert.equal(a.code, 0, a.err); assert.equal(b.code, 0, b.err);
+  assert.equal(a.out, 't1\tActive\n');
+  const acc = st.events.filter((e) => e.name === 'TransferAcceptanceRequested');
+  assert.equal(acc.length, 2);
+  assert.equal(str(acc[0].ev[0]), 't1'); assert.equal(acc[0].ev.length, 1);
+  assert.equal(str(acc[1].ev[1]), join(home, 'got'));
+});
+
+test('accept without an id takes every waiting incoming transfer and nothing else', async () => {
+  const st = { email: 'me@example.com', users: [ME], transfers: [IN('a'), IN('b'), IN('done', 8), { id: 'mine', status: 3 }], afterAccept: 5 };
+  const { home, sock, done } = await setup(st);
+  const r = await blip(home, sock, ['accept']);
+  const none = await blip(home, sock, ['accept']);
+  done();
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(st.events.filter((e) => e.name === 'TransferAcceptanceRequested').map((e) => str(e.ev[0])), ['a', 'b']);
+});
+
+test('accept and decline refuse outgoing, finished and unknown transfers', async () => {
+  const st = { email: 'me@example.com', users: [ME], transfers: [{ id: 'mine', status: 3 }, IN('done', 8)] };
+  const { home, sock, done } = await setup(st);
+  const out = await blip(home, sock, ['accept', 'mine']);
+  const fin = await blip(home, sock, ['decline', 'done']);
+  const none = await blip(home, sock, ['accept', 'nope']);
+  const bare = await blip(home, sock, ['decline']);
+  done();
+  assert.equal(out.code, 1); assert.match(out.err, /outgoing transfer/);
+  assert.equal(fin.code, 1); assert.match(fin.err, /already Completed/);
+  assert.equal(none.code, 1); assert.match(none.err, /no such transfer: nope/);
+  assert.equal(bare.code, 2);
+  assert.equal(st.events.length, 0);
+});
+
+test('decline sends the decline event and reports it', async () => {
+  const st = { email: 'me@example.com', users: [ME], transfers: [IN('t1')] };
+  const { home, sock, done } = await setup(st);
+  const r = await blip(home, sock, ['decline', 't1']);
+  done();
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.out, 't1\tdeclined\n');
+  assert.equal(st.events[0].name, 'TransferDeclineRequested');
+});
+
+test('an accept that leaves the transfer Invited fails with the engine\'s error', async () => {
+  const st = { email: 'me@example.com', users: [ME], transfers: [IN('t1', 3, { err: 'stat /x: no such file or directory' })] };
+  const { home, sock, done } = await setup(st);
+  const r = await blip(home, sock, ['accept', 't1'], { BLIP_TIMEOUT_S: '1' });
+  done();
+  assert.equal(r.code, 1);
+  assert.match(r.err, /t1 is still Invited after accept: Invited err=stat \/x/);
+});
+
+test('transfers shows where a received transfer was saved', async () => {
+  const st = { email: 'me@example.com', users: [ME], transfers: [IN('t1', 8, { saved: '/home/x/Downloads/a.txt' })] };
+  const { home, sock, done } = await setup(st);
+  const r = await blip(home, sock, ['transfers']);
+  done();
+  assert.equal(r.out, 't1\tin\tCompleted\tsaved=/home/x/Downloads/a.txt\n');
+});
+
+test('folder and auto-accept show the engine\'s settings and send changes', async () => {
+  const st = { email: 'me@example.com', users: [ME], config: {} };
+  const { home, sock, done } = await setup(st);
+  const dir = join(home, 'new place');
+  const show = await blip(home, sock, ['folder']);
+  const a = await blip(home, sock, ['auto-accept']);
+  const bad = await blip(home, sock, ['auto-accept', 'maybe']);
+  st.config = { folder: dir, autoAcceptDisabled: true };
+  const set = await blip(home, sock, ['folder', dir]);
+  const off = await blip(home, sock, ['auto-accept', 'off']);
+  const b = await blip(home, sock, ['auto-accept']);
+  const made = existsSync(dir);
+  done();
+  assert.equal(show.out, `incoming files are saved to ${join(home, 'Downloads')} (default)\n`);
+  assert.equal(a.out, 'auto-accept is on\n');
+  assert.equal(bad.code, 2);
+  assert.equal(set.out, `incoming files are saved to ${dir}\n`);
+  assert.equal(b.out, 'auto-accept is off\n');
+  const folderEv = st.events.find((e) => e.name === 'TransferSetCustomDefaultSavePath');
+  assert.equal(str(folderEv.ev[0]), dir);
+  assert.ok(made);
+  assert.equal(st.events.find((e) => e.name === 'TransferSetAutoAccept').ev[0].value, 0);
 });

@@ -115,7 +115,7 @@ The app inherits the environment of the command that starts it, so start it from
 
 When `blip` starts the engine, and again at `login`, it sends the engine a user agent with your OS name and kernel release, as the desktop app does, and names the client `blip-cli` (app id `io.github.sahilux.blip-cli`). The engine appears to pass this on to Blip's servers, so Blip can tell that this device uses an unofficial client.
 
-While the app runs, this machine is a Blip device like any other, and it receives as well as sends. Depending on the app's auto-accept setting, transfers from your own devices may be saved here without a prompt and with no size limit. `blip` can't accept, decline or cancel transfers or change that setting, and `blip transfers` lists incoming ones only as `in`. If you only want to send, run `blip stop` when you're done. Every command except `status` and `stop` starts the app again.
+While the app runs, this machine is a Blip device like any other, and it receives as well as sends. Depending on the app's auto-accept setting, transfers from your own devices may be saved here without a prompt and with no size limit. See [Receive files](#receive-files). `blip` can't cancel a transfer. If you only want to send, run `blip stop` when you're done. Every command except `status` and `stop` starts the app again.
 
 On Linux, if Blip is already running some other way and answers on its socket, for example as a systemd service or in a desktop session, `blip` uses that instance. On macOS the desktop app uses its own profile and socket, so `blip` always runs its own engine. Native startup never asks the engine to take over another instance. Don't run `blip` while such an instance is still starting up, or `blip` starts a second one. `blip stop` only stops an instance that `blip` started.
 
@@ -192,6 +192,24 @@ The receiving device needs Blip open (phones) or awake (computers).
 
 Stopping `send` early doesn't cancel the transfer. If you press Ctrl-C, `send` gives up waiting, or Blip stops answering after the transfer was created, the background app keeps the transfer and may still deliver it. `send` says so and prints the transfer id. To stop the transfer, decline or cancel it on the receiving device.
 
+## Receive files
+
+While Blip runs, files your other devices send to this one land in the receive folder, which is `~/Downloads` unless you set another. Blip doesn't create that folder, and a transfer that fails on a missing folder stays `Invited` and shows `err=stat <folder>: no such file or directory`. So every `blip` command that starts or reaches the app creates the folder first (and says `created <folder> for incoming files`). If it can't, it prints a warning and carries on. `blip start` at boot (see [The background app](#the-background-app)) is enough to keep the folder there.
+
+```sh
+blip folder                  # show where incoming files are saved
+blip folder ~/Inbox          # save them there instead (signed in; creates the folder)
+blip auto-accept             # show whether your own devices' transfers are saved without asking
+blip auto-accept off         # ask first (signed in); `on` turns it back on
+blip transfers               # incoming ones show as "in"; a finished one ends with saved=<path>
+blip accept <id>             # accept one incoming transfer that is waiting (state Invited)
+blip accept                  # accept every incoming transfer that is waiting
+blip accept <id> --dir ~/x   # accept it and save it into that folder
+blip decline <id>            # decline an incoming transfer
+```
+
+`accept` and `decline` wait up to 15 seconds (or `BLIP_TIMEOUT_S`, if smaller) for Blip to act, then print the new state: `<id>`, a tab, and `Active`, `Completed`, `declined` or similar. If the transfer is still `Invited`, they print the error Blip reports and exit with code 1. They refuse outgoing transfers and finished ones. A transfer that got stuck on a missing folder can be accepted again once the folder exists.
+
 ## Devices and transfers
 
 `devices` prints one line per device on your account, with the device name, a tab, and its id. The machine you are on is marked.
@@ -202,7 +220,7 @@ Work laptop	<device-id>
 home-server (this device)	<device-id>
 ```
 
-`transfers` lists the transfers the app knows about, one per line, as id, direction (`out` or `in`) and state. Pass a transfer id to see just that one. An id that isn't there prints `no such transfer: <id>` and exits with code 1. If a transfer failed, the line ends with a tab and `err=` followed by the local error text, a tab and `remote=` followed by the other device's error text, or both.
+`transfers` lists the transfers the app knows about, one per line, as id, direction (`out` or `in`) and state. Pass a transfer id to see just that one. An id that isn't there prints `no such transfer: <id>` and exits with code 1. If a transfer failed, the line ends with a tab and `err=` followed by the local error text, a tab and `remote=` followed by the other device's error text, or both. Once Blip has saved an incoming transfer, the line ends with a tab and `saved=` followed by where it put it.
 
 ```
 <transfer-id>	out	Completed
@@ -215,8 +233,8 @@ Control characters in names, ids, and error texts from Blip are printed as `\uXX
 | Code | Meaning |
 |---|---|
 | 0 | Success. For `send`, the transfer completed |
-| 1 | Error: not signed in, a failed or cancelled transfer, an unknown or ambiguous device, an unknown transfer id, a missing or refused path, Blip not running (`status`), or Blip failed to start or stop |
-| 2 | Wrong usage, such as `send` with no path, an empty path, no device to send to, or an invalid `BLIP_TIMEOUT_S` |
+| 1 | Error: not signed in, a failed or cancelled transfer, an unknown or ambiguous device, an unknown transfer id, an `accept` or `decline` that Blip did not act on, a missing or refused path, Blip not running (`status`), or Blip failed to start or stop |
+| 2 | Wrong usage, such as `send` with no path, an empty path, no device to send to, or an invalid `BLIP_TIMEOUT_S`, `decline` with no id, or an unknown `auto-accept` value |
 | 3 | `send` gave up waiting, or lost contact with Blip after creating the transfer. The transfer stays queued in Blip |
 | 130, 143 | `send` was interrupted (Ctrl-C) or terminated, and the transfer stays queued in Blip. `login` also exits with 130 on Ctrl-C |
 
@@ -361,6 +379,8 @@ DRPC frames look like this: `control byte | varint stream | varint message | var
 | `/rpc.Service/Dispatch` | takes `DispatchRequest{event: Any}` |
 
 Signing in is two events: `event.SendRegistrationCodeRequested{email, device_name}`, then `event.RegistrationRequested{code, device_dedupe_id, device_name, device_kind}`. `Registration.status` goes 0 NotStarted, 1 SendingCode, 2 CodeSent, 3 Registering, and errors land in `Registration.error` (tag 999). The dedupe id is the first 36 characters of `hardwareinfo/device-dedupe-id.txt` in the session data directory (see [Platform paths](#platform-paths)), so signing in again replaces this device instead of adding one. On Linux it is the file the desktop app uses too; on macOS it belongs to the separate CLI profile. If the file doesn't exist yet, `blip login` creates it with a new random UUID. If it doesn't start with a UUID, `login` stops and names the file. Signing out is `event.RemoveDeviceThenLogout{}`.
+
+Receiving: `event.TransferAcceptanceRequested{transfer_id, save_path}` (the path is optional), `event.TransferDeclineRequested{transfer_id}`, `event.TransferSetAutoAccept{auto_accept}` and `event.TransferSetCustomDefaultSavePath{path}`. `State.config` (tag 100) holds `auto_accept_disabled` (tag 2) and `custom_default_save_path` (tag 4); with no custom path the engine saves to `~/Downloads`. A transfer's saved location is tag 501. A signed-out engine logs these events but did not report the change in `State.config`, and a signed-in engine hasn't been checked, so `folder <path>` and `auto-accept on|off` require a sign-in and fail with a timeout if Blip never reports the change.
 
 Sending is three events: `event.TransferCreateRequested{transfer_id, peer_id}`, `event.TransferAddContentRequested{transfer_id, locations[]}` and `event.TransferInviteRequested{transfer_id, peer_id}`, where `blip.PeerId{user_id, device_id}`. Transfer status (tag 800): 1 Created, 2 InviteRequested, 3 Invited, 4 Pending, 5 Active, 6 Paused, 7 ResumeRequested, 8 Completed, 9 Cancelled.
 
