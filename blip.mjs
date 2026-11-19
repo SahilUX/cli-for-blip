@@ -7,6 +7,10 @@
 //   blip login [email]            sign in with the code Blip emails you
 //   blip logout                   sign out and remove this device from the account
 //   blip send <path>... [--to d]  send files/folders to one of your devices, wait for completion
+//   blip accept [id] [--dir d]    accept an incoming transfer (no id: every one that is waiting)
+//   blip decline <id>             decline an incoming transfer
+//   blip folder [path]            show or set where incoming files are saved
+//   blip auto-accept [on|off]     show or set whether transfers from your own devices are saved without asking
 //   blip devices | transfers [id] | status | start | stop
 import { randomUUID } from 'node:crypto';
 import { resolve, dirname, basename } from 'node:path';
@@ -31,6 +35,10 @@ const USAGE = `usage: blip <command>
   login [email] [--name <device name>]   sign in with the code Blip emails you
   logout                                 sign out and remove this device from your account
   send <path>... [--to <device>]         send files or folders and wait until they arrive
+  accept [id] [--dir <folder>]           accept an incoming transfer (no id: all waiting ones)
+  decline <id>                           decline an incoming transfer
+  folder [path]                          show or set the folder incoming files are saved to
+  auto-accept [on|off]                   show or set saving your own devices' transfers without asking
   devices                                list your own devices
   transfers [id]                         list transfers and their state
   status                                 show whether Blip runs and who is signed in
@@ -224,7 +232,7 @@ async function transfers() {
     const t = fields(val); const g = (n) => t.find((f) => f.tag === n);
     const error = (n) => (g(n) ? str(fields(g(n).value).find((f) => f.tag === 2)) : '');  // 600 local error, 601 the other device's error
     const status = g(800)?.value ?? 0;
-    return { id: key, status: STATUS[status] ?? `status ${status}`, direction: g(700)?.value === 2 ? 'out' : 'in', err: error(600), remoteErr: error(601) };
+    return { id: key, status: STATUS[status] ?? `status ${status}`, direction: g(700)?.value === 2 ? 'out' : 'in', err: error(600), remoteErr: error(601), saved: g(501) ? str(g(501)) : '' };
   });
 }
 const describe = (t) => `${t.status}${t.err ? ` err=${safe(t.err)}` : ''}${t.remoteErr ? ` remote=${safe(t.remoteErr)}` : ''}`;
@@ -239,6 +247,19 @@ function dedupeId() {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) die(`${path} does not start with a device id. Move it away and run blip login again`);
   return id;
 }
+// Blip's Config (State tag 100): auto_accept_disabled (2) and custom_default_save_path (4). Without a custom path the engine saves to ~/Downloads.
+function receiveSettings(st) {
+  const c = fields(st.find((f) => f.tag === 100)?.value ?? Buffer.alloc(0));
+  const custom = str(c.find((f) => f.tag === 4));
+  return { folder: custom.startsWith('/') ? custom : `${HOME}/Downloads`, custom: custom.startsWith('/'), autoAccept: c.find((f) => f.tag === 2)?.value !== 1 };
+}
+// The engine doesn't create the folder it saves into, and a transfer that fails on a missing folder stays Invited. So create it before anything can arrive.
+async function ensureReceiveFolder() {
+  let folder;
+  try { folder = receiveSettings(await getState()).folder; } catch { return; }              // best effort: the command itself reports a broken Blip
+  try { if (mkdirSync(folder, { recursive: true })) console.error(`created ${safe(folder)} for incoming files`); }
+  catch (e) { console.error(`warning: can't use ${safe(folder)} for incoming files: ${safe(e.message)} (set another with: blip folder <path>)`); }
+}
 const config = () => { try { const c = JSON.parse(readFileSync(CONFIG, 'utf8')); return c && typeof c === 'object' ? c : {}; } catch { return {}; } };
 
 process.on('uncaughtException', (e) => {
@@ -250,7 +271,7 @@ process.on('unhandledRejection', (e) => { throw e; });
 
 let opts;
 try {
-  opts = parseArgs({ allowPositionals: true, tokens: true, options: { to: { type: 'string', short: 't' }, name: { type: 'string' }, help: { type: 'boolean', short: 'h' } } });
+  opts = parseArgs({ allowPositionals: true, tokens: true, options: { to: { type: 'string', short: 't' }, name: { type: 'string' }, dir: { type: 'string' }, help: { type: 'boolean', short: 'h' } } });
 } catch (e) { die(`${e.message}\n${USAGE}`, 2); }
 const [cmd, ...args] = opts.positionals; const { values: flag } = opts;
 const there = (p) => { try { lstatSync(p); return true; } catch { return false; } };   // a dangling link is there too
@@ -260,7 +281,7 @@ for (const t of opts.tokens) {
   if (t.kind === 'option' && there(raw)) die(`"${raw}" is a file but reads as an option. Put paths after -- (blip send -- <path>...) or start them with ./`, 2);
 }
 if (!cmd || cmd === 'help' || flag.help) { console.log(USAGE); process.exit(cmd || flag.help ? 0 : 2); }
-if (!['login', 'logout', 'send', 'devices', 'transfers', 'status', 'start', 'stop'].includes(cmd)) die(USAGE, 2);
+if (!['login', 'logout', 'send', 'accept', 'decline', 'folder', 'auto-accept', 'devices', 'transfers', 'status', 'start', 'stop'].includes(cmd)) die(USAGE, 2);
 
 // send: check everything that doesn't need the app before starting it.
 const T = process.env.BLIP_TIMEOUT_S?.trim();
@@ -308,6 +329,7 @@ if (cmd === 'stop') { await stop(); process.exit(0); }
 const current = cmd === 'status' && await getState().catch((e) => { if (e.syscall === 'connect' && ['ENOENT', 'ECONNREFUSED'].includes(e.code)) return null; throw e; });
 if (cmd === 'status' && !current) { console.log('Blip is not running (run: blip start)'); process.exit(1); }
 const started = cmd !== 'status' && await start();
+if (cmd !== 'status') await ensureReceiveFolder();
 if (cmd === 'start') {
   console.error(started ? 'Blip is running in the background' : 'Blip is already running');
 } else if (cmd === 'status') {
@@ -360,7 +382,57 @@ if (cmd === 'start') {
   await signedIn();
   const list = (await transfers()).filter((t) => !args[0] || t.id === args[0]);
   if (args[0] && !list.length) die(`no such transfer: ${safe(args[0])}`);
-  for (const t of list) console.log(`${safe(t.id)}\t${t.direction}\t${t.status}${t.err ? `\terr=${safe(t.err)}` : ''}${t.remoteErr ? `\tremote=${safe(t.remoteErr)}` : ''}`);
+  for (const t of list) console.log(`${safe(t.id)}\t${t.direction}\t${t.status}${t.err ? `\terr=${safe(t.err)}` : ''}${t.remoteErr ? `\tremote=${safe(t.remoteErr)}` : ''}${t.saved ? `\tsaved=${safe(t.saved)}` : ''}`);
+} else if (cmd === 'accept' || cmd === 'decline') {
+  await signedIn();
+  const all = await transfers();
+  let targets;
+  if (args[0]) {
+    const t = all.find((x) => x.id === args[0]);
+    if (!t) die(`no such transfer: ${safe(args[0])}`);
+    if (t.direction !== 'in') die(`${safe(t.id)} is an outgoing transfer; only incoming ones can be ${cmd}ed`);
+    if (['Completed', 'Cancelled'].includes(t.status)) die(`${safe(t.id)} is already ${t.status}; nothing to ${cmd}`);
+    targets = [t];
+  } else if (cmd === 'accept') {
+    targets = all.filter((t) => t.direction === 'in' && t.status === 'Invited');
+    if (!targets.length) { console.error('no incoming transfer is waiting to be accepted'); process.exit(0); }
+  } else die('usage: blip decline <id> (ids: blip transfers)', 2);
+  let dir = '';
+  if (flag.dir) {
+    if (cmd !== 'accept') die('--dir only goes with accept', 2);
+    dir = resolve(flag.dir); mkdirSync(dir, { recursive: true });
+  }
+  const waitMs = timeout > 0 && Number.isFinite(timeout) ? Math.min(timeout, 15) * 1000 : 15000;
+  let failed = false;
+  for (const t of targets) {
+    await dispatch(cmd === 'accept' ? 'TransferAcceptanceRequested' : 'TransferDeclineRequested', Buffer.concat([s(1, t.id), ...(dir ? [s(2, dir)] : [])]));
+    // Wait for the engine to act on it; an accept that fails on its side leaves the transfer Invited with an error.
+    const deadline = Date.now() + waitMs; let now;
+    for (;;) { now = (await transfers()).find((x) => x.id === t.id); if (!now || now.status !== 'Invited' || Date.now() > deadline) break; await sleep(500); }
+    if (!now) console.log(`${safe(t.id)}\t${cmd === 'accept' ? 'accepted' : 'declined'}`);
+    else if (now.status === 'Invited') { failed = true; console.error(`${safe(t.id)} is still Invited after ${cmd}: ${describe(now)}`); }
+    else console.log(`${safe(t.id)}\t${now.status}${now.err ? `\terr=${safe(now.err)}` : ''}`);
+  }
+  if (failed) process.exit(1);
+} else if (cmd === 'folder') {
+  const want = args[0] ? resolve(args[0]) : '';
+  if (want) {
+    await signedIn();
+    mkdirSync(want, { recursive: true });
+    await dispatch('TransferSetCustomDefaultSavePath', s(1, want));
+    await waitFor((st) => receiveSettings(st).folder === want, 10000, 'Blip to use the new folder');
+  }
+  const { folder, custom } = receiveSettings(await getState());
+  console.log(`incoming files are saved to ${safe(folder)}${custom ? '' : ' (default)'}`);
+} else if (cmd === 'auto-accept') {
+  if (args[0] && !['on', 'off'].includes(args[0])) die('usage: blip auto-accept [on|off]', 2);
+  if (args[0]) {
+    await signedIn();
+    const on = args[0] === 'on';
+    await dispatch('TransferSetAutoAccept', vi(1, on ? 1 : 0));
+    await waitFor((st) => receiveSettings(st).autoAccept === on, 10000, 'Blip to change auto-accept');
+  }
+  console.log(`auto-accept is ${receiveSettings(await getState()).autoAccept ? 'on' : 'off'}`);
 } else if (cmd === 'send') {
   await signedIn();
   const others = (await ownDevices()).filter((d) => !d.isThis);
