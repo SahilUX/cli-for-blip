@@ -1,4 +1,4 @@
-# Blip rights and source review
+# CLI for Blip: rights and source review
 
 Reviewed on October 17, 2026 against [Blip's official terms of service](https://blip.net/terms-of-service), dated January 18, 2025.
 
@@ -53,3 +53,20 @@ entry point family as Linux. The existing C host loaded it and served RPC in
 an isolated profile. No Blip binary, framework resources, or decompiled code
 are committed. The proprietary-engine and interoperability uncertainties
 above continue to apply.
+
+## Name review, November 26, 2026
+
+The project was renamed from Blip CLI to CLI for Blip, because Blip's terms
+restrict use of its trademarks. The new name describes what the tool works
+with. [Blip's terms of service](https://blip.net/terms-of-service) were read
+again that day. They still carry the date January 18, 2025. The relevant text
+says: "We own all rights to Blip, including trademarks and content. We grant
+you a limited license to use Blip for its intended purpose. Please, do not use
+Blip's trademarks without permission."
+
+The terms do not mention reverse engineering, unofficial clients, or naming
+rules. No brand or trademark guidelines were linked from the public Blip pages
+reviewed. The new name still contains the word Blip, and no permission to use
+it has been established. The command name, install paths, and the client name
+and app id sent to Blip were not changed by this rename. The uncertainties
+above still apply.
