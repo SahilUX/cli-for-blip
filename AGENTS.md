@@ -39,7 +39,8 @@ the official archive, verifying its SHA-256 checksum. No GUI app is installed.
   change them together.
 - `blip logout` proves the device removal by the engine's `DeviceRemove` log line.
   Check that line again when a pin changes: if its text differs, logout always exits 4.
-  Never test it with a real account. Run the engine without network against a fake server.
+  Test its failures with the engine running without network against a fake server.
+  A test login as described above covers the success case.
 - When you change a message, exit code or default in `blip.mjs`, update the
   matching text in `README.md`.
 

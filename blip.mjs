@@ -398,7 +398,7 @@ if (cmd === 'start') {
   if (!me.email) die('not signed in', 0);
   const from = logSize();
   const seconds = timeout > 0 && Number.isFinite(timeout) ? Math.min(timeout, 30) : 30;
-  const pending = 'Blip may still sign out and remove this device later (check: blip status)';
+  const pending = 'Blip may still sign out and remove this device later. Until then the device may still be listed on your account, even if blip status says not signed in. Check the device list in Blip on another device';
   try {
     await dispatch('RemoveDeviceThenLogout');
     const deadline = Date.now() + seconds * 1000;

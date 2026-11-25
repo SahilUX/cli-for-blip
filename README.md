@@ -49,20 +49,20 @@ Make sure `~/.local/bin` is on your `PATH`. On Debian and Ubuntu, `~/.profile` a
 
 To update the CLI, pull this repository and run `./install.sh` again. A running engine keeps its old code until you run `blip stop` and `blip start`. Updating the engine version requires verifying its native ABI and protocol and changing the installer pins.
 
-Don't move or delete the clone while `blip` is installed. If you move it, relink from the new place with `ln -sfn "$PWD/blip.mjs" ~/.local/bin/blip`. Running `./install.sh` there also works; it downloads and reinstalls the pinned engine.
+Don't move or delete the clone while `blip` is installed. If you move it, relink from the new place with `ln -sfn "$PWD/blip.mjs" ~/.local/bin/blip`. Running `./install.sh` there also works once you remove the old link; it downloads and reinstalls the pinned engine.
 
 If your clone still points at the repository's earlier name, `blip-cli`, GitHub redirects it. To use the new address, run `git remote set-url origin https://github.com/SahilUX/cli-for-blip.git` in the clone. You don't need to rename or move it.
 
 ## The `blip` command name
 
-This CLI's command is `blip`, and Blip's own Linux app also calls its launcher `blip`. Only one of them can be `~/.local/bin/blip`. `install.sh` checks what is there first:
+This CLI's command is `blip`, and Blip's own Linux app also calls its launcher `blip`. Only one of them can be `~/.local/bin/blip`. `install.sh` checks what is there before it starts, and again just before it changes the link:
 
 | `~/.local/bin/blip` is | `install.sh` |
 |---|---|
 | Nothing | Creates the link to this CLI |
-| A link to a clone of this CLI, or to a `blip.mjs` that no longer exists | Points it at this clone |
+| A link to a clone of this CLI | Points it at this clone |
 | Blip's launcher, a link to `~/.local/opt/blip/bin/blip` | Stops, unless you pass `--replace-launcher` |
-| Any other file, folder, or link | Stops and changes nothing. Move it first |
+| Any other file, folder, or link, including a link whose target is missing or can't be read | Stops and changes nothing. Move or remove it first |
 
 To choose which one owns the name:
 
@@ -110,9 +110,11 @@ Run these before you delete the clone:
 ```sh
 blip logout              # sign out and remove this machine from your device list (exit code 4: removal not confirmed)
 blip stop                # stop the background app that blip started
-rm ~/.local/bin/blip
+case "$(readlink ~/.local/bin/blip)" in */blip.mjs) rm ~/.local/bin/blip ;; esac
 rm -rf ~/.cache/blip-cli "${XDG_CONFIG_HOME:-$HOME/.config}/blip-cli"
 ```
+
+The `case` line removes `~/.local/bin/blip` only if it links to this CLI, so Blip's own launcher stays. If you gave the CLI another name, use that name in the first two commands and remove that link too.
 
 Remove the installed native runtime with `rm -rf ~/.local/lib/blip-cli`. On macOS, also remove `~/Library/Caches/blip-cli` and the remembered-device `config.json` listed above. The engine profile remains in the platform data directory; delete that directory only if you want to remove it too. On Linux the engine also keeps its cache and socket in `~/.cache/net.blip.Blip`, which it shares with the desktop app; remove it together with the data directory. We have not audited every Apple system storage location the proprietary framework may use.
 
@@ -144,11 +146,15 @@ Blip's engine signs out on this machine even if removing the device failed, for 
 |---|---|
 | 0 | Signed out, and the engine logged that the device was removed from your account. Also when no one was signed in |
 | 4 | Signed out on this machine, but the removal is not confirmed. The device may still be on your account |
-| 3 | Not signed out after 30 seconds (or `BLIP_TIMEOUT_S`, if smaller), or `blip` lost contact with the engine. The engine may still finish, so check `blip status` |
+| 3 | Not signed out after 30 seconds (or `BLIP_TIMEOUT_S`, if smaller), or `blip` lost contact with the engine. The engine may still finish, and the device may still be on your account |
 
-After exit code 4, remove the device in Blip on another device with **Remove this device**. You can also run `blip login` and then `blip logout` on this machine once you are online. Exit code 4 is also what you get when the engine's log isn't in the log file listed under [Platform paths](#platform-paths), as with a Blip that `blip` did not start.
+After exit code 3 or 4, check the device list in Blip on another device. `blip status` can't tell you: `not signed in` doesn't mean the device was removed, for example if you ran `blip stop` while a logout was waiting. A second `blip logout` then also prints `not signed in` and exits with code 0, so a script shouldn't read that as a confirmed removal.
 
-`login` and `logout` follow Blip's sign-in flow through RPC. Email-code login has been verified on macOS and Linux x86-64, and a real logout on Linux x86-64. Real-service logout on macOS is still unverified. The log check was tested against the Linux engine. If the macOS engine logs it differently, `logout` exits with code 4 even when the removal worked.
+If the device is still listed, remove it there with **Remove this device**. You can also run `blip login` and then `blip logout` on this machine once you are online. Exit code 4 is also what you get when the engine's log isn't in the log file listed under [Platform paths](#platform-paths), as with a Blip that `blip` did not start. `logout` reads at most the first 4 MB the log gained, so it also exits with code 4 if the line comes after more than that.
+
+The proof is only as good as the engine's own check. The engine counts a reply as success when it has status 200, also after following a 301, 302, or 303 redirect, and doesn't look at its content.
+
+`login` and `logout` follow Blip's sign-in flow through RPC. Email-code login has been verified on macOS and Linux x86-64. On November 26, 2026, login, a restart that kept the session, and logout were verified on Linux x86-64 with a real account, at commit 98546cb of pull request #9. `logout` exited with code 0, and the device was gone from the account. The cases where removal fails were tested only with the Linux engine against a fake server. Logout on macOS is still untested. If the macOS engine logs it differently, `logout` exits with code 4 even when the removal worked.
 
 ## The background app
 

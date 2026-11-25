@@ -640,9 +640,9 @@ test('logout with no one signed in does nothing', async () => {
 
 test('logout exits 3 when Blip does not sign out in time or stops answering', async () => {
   const slow = await logout({ stuck: true, env: { BLIP_TIMEOUT_S: '1' } });
-  assert.equal(slow.code, 3); assert.match(slow.err, /has not signed out after 1 s.*check: blip status/);
+  assert.equal(slow.code, 3); assert.match(slow.err, /has not signed out after 1 s.*may still be listed on your account/);
   const lost = await logout({ dieOnLogout: true });
-  assert.equal(lost.code, 3); assert.match(lost.err, /lost contact with Blip while signing out: .*check: blip status/);
+  assert.equal(lost.code, 3); assert.match(lost.err, /lost contact with Blip while signing out: .*may still be listed on your account/);
 });
 
 test('decline checks its arguments before anything else', async () => {

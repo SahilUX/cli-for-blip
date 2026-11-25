@@ -48,23 +48,30 @@ if [[ -e $runtime || -L $runtime ]]; then
   [[ -d $runtime && ! -L $runtime && -f $runtime/.blip-cli-install ]] ||
     { echo "refusing to replace an unmanaged install: $runtime" >&2; exit 1; }
 fi
-if [[ -e $link || -L $link ]]; then
-  # A link to a clone of this CLI is updated, also when that clone moved away.
-  # Blip's own installer puts its launcher link here too: that one is replaced
-  # only when asked. Anything else belongs to someone else.
-  target=
-  [[ ! -L $link ]] || target=$(readlink -- "$link")
+# A link to a clone of this CLI is updated. Blip's own installer puts its
+# launcher link here too: that one is replaced only when asked. Anything else,
+# and any link whose target can't be checked, may belong to someone else.
+check_link() {
+  local target
+  [[ -e $link || -L $link ]] || return 0
+  if [[ ! -L $link ]]; then echo "refusing to replace an existing file: $link" >&2; exit 1; fi
+  target=$(readlink -- "$link")
   if [[ $target == "$HOME/.local/opt/blip/bin/blip" ]]; then
-    [[ $replace_launcher == true ]] || {
-      echo "refusing to replace Blip's own launcher: $link" >&2
-      echo 'Uninstall the Blip app first, or run ./install.sh --replace-launcher to give this CLI that name.' >&2
-      exit 1
-    }
-  else
-    [[ $target == */blip.mjs ]] && { [[ ! -e $link ]] || { [[ -f $link ]] && [[ $(sed -n 2p -- "$link") == '// blip: headless command line for the Blip '* ]]; }; } ||
-      { echo "refusing to replace an existing file: $link" >&2; exit 1; }
+    [[ $replace_launcher == true ]] && return 0
+    echo "refusing to replace Blip's own launcher: $link" >&2
+    echo 'Uninstall the Blip app first, or run ./install.sh --replace-launcher to give this CLI that name.' >&2
+    exit 1
   fi
-fi
+  if [[ $target == */blip.mjs && -f $link ]] && [[ $(sed -n 2p -- "$link" 2>/dev/null) == '// blip: headless command line for the Blip '* ]]; then return 0; fi
+  if [[ $target == */blip.mjs && ! -f $link ]]; then
+    echo "refusing to replace a link that can't be checked: $link -> $target" >&2
+    echo 'If it is left over from a clone you moved or deleted, remove the link and run ./install.sh again.' >&2
+  else
+    echo "refusing to replace an existing file: $link" >&2
+  fi
+  exit 1
+}
+check_link
 
 mkdir -p -- "${runtime%/*}" "${link%/*}"
 work=$(mktemp -d "${runtime%/*}/.blip-cli-install.XXXXXXXX")
@@ -115,6 +122,7 @@ if [[ -d $runtime ]]; then
 fi
 mv -- "$work/next" "$runtime"
 activated=true
+check_link  # again, because the download took a while; a refusal restores the runtime
 if [[ $os == Darwin ]]; then
   mv -fh -- "$work/cli-link" "$link"
 else
@@ -123,12 +131,15 @@ fi
 committed=true
 trap 'exit 130' INT
 trap 'exit 143' TERM
-[[ :$PATH: == *":$HOME/.local/bin:"* ]] || echo 'note: add ~/.local/bin to your PATH to run blip' >&2
+on_path=false
+[[ :$PATH: != *":$HOME/.local/bin:"* && :$PATH: != *":$HOME/.local/bin/:"* ]] || on_path=true
 # Another blip on PATH, such as a packaged Blip app, can run instead of this one.
 first=$(type -P blip) || first=
 if [[ -n $first && ! $first -ef $link ]]; then
-  echo "warning: blip runs $first, which comes before ~/.local/bin on your PATH. Use $link, or put ~/.local/bin first." >&2
-elif [[ -n $first ]]; then
+  if [[ $on_path == true ]]; then reason='which comes before ~/.local/bin on your PATH'; else reason='because ~/.local/bin is not on your PATH'; fi
+  echo "warning: blip runs $first, $reason. Use $link, or put ~/.local/bin first." >&2
+else
+  [[ $on_path == true ]] || echo 'note: add ~/.local/bin to your PATH to run blip' >&2
   while IFS= read -r other; do
     [[ $other -ef $link ]] || echo "note: another blip is at $other. Your PATH picks $first first." >&2
   done < <(type -aP blip)
