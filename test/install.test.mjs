@@ -9,7 +9,7 @@ const mac = process.platform === 'darwin';
 const platformSupported = ['linux', 'darwin'].includes(process.platform);
 const installer = fileURLToPath(new URL('../install.sh', import.meta.url));
 
-test('installer refuses unrelated files and keeps an existing runtime on download failure', { skip: !platformSupported, timeout: 15000 }, (t) => {
+test('installer refuses unrelated files and keeps an existing runtime on download failure', { skip: !platformSupported, timeout: 60000 }, (t) => {
   const home = mkdtempSync(join(tmpdir(), 'blip-install-'));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const runtime = join(home, '.local/lib/blip-cli'), bin = join(home, '.local/bin'), mocks = join(home, 'mocks');
@@ -24,7 +24,20 @@ test('installer refuses unrelated files and keeps an existing runtime on downloa
   const conflict = run();
   assert.equal(conflict.status, 1); assert.match(conflict.stderr, /refusing to replace an existing file/);
   assert.equal(readFileSync(join(bin, 'blip'), 'utf8'), 'unrelated command');
-  rmSync(join(bin, 'blip')); symlinkSync(join(home, 'old/blip.mjs'), join(bin, 'blip'));
+  // Someone else's blip.mjs, and Blip's own launcher unless asked for.
+  rmSync(join(bin, 'blip')); mkdirSync(join(home, 'other'));
+  writeFileSync(join(home, 'other/blip.mjs'), '#!/usr/bin/env node\n// another tool\n');
+  mkdirSync(join(home, '.local/opt/blip/bin'), { recursive: true }); writeFileSync(join(home, '.local/opt/blip/bin/blip'), 'launcher');
+  for (const [target, message] of [['other/blip.mjs', /refusing to replace an existing file/], ['other', /refusing to replace an existing file/], ['.local/opt/blip/bin/blip', /refusing to replace Blip's own launcher[^]*--replace-launcher/]]) {
+    symlinkSync(join(home, target), join(bin, 'blip'));
+    const r = run();
+    assert.equal(r.status, 1); assert.match(r.stderr, message);
+    assert.equal(readlinkSync(join(bin, 'blip')), join(home, target));
+    rmSync(join(bin, 'blip'));
+  }
+  const usage = spawnSync('bash', [installer, '--force'], { env, encoding: 'utf8' });
+  assert.equal(usage.status, 2); assert.match(usage.stderr, /usage: \.\/install\.sh \[--replace-launcher\]/);
+  symlinkSync(join(home, 'old/blip.mjs'), join(bin, 'blip'));
   writeFileSync(join(mocks, 'curl'), '#!/bin/sh\nexit 7\n', { mode: 0o700 });
   const failed = run();
   assert.equal(failed.status, 7);
@@ -40,7 +53,7 @@ test('installer refuses unrelated files and keeps an existing runtime on downloa
   assert.deepEqual(readdirSync(join(home, '.local/lib')), ['blip-cli']);
 });
 
-test('installer activates a staged runtime and restores it if activation fails or is terminated', { skip: !platformSupported, timeout: 15000 }, (t) => {
+test('installer activates a staged runtime and restores it if activation fails or is terminated', { skip: !platformSupported, timeout: 60000 }, (t) => {
   const home = mkdtempSync(join(tmpdir(), 'blip-activate-'));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const mocks = join(home, 'mocks'), root = join(home, 'archive'), member = join(root, mac ? 'Blip.app/Contents/Frameworks/BlipKit.framework/Versions/A' : 'blip-1.2.6/lib/runtime/lib');
@@ -72,6 +85,25 @@ test('installer activates a staged runtime and restores it if activation fails o
   assert.equal(existsSync(join(runtime, mac ? 'BlipKit.framework/Versions/A/BlipKit' : 'libblip.so')), true);
   assert.equal(readlinkSync(link), fileURLToPath(new URL('../blip.mjs', import.meta.url)));
   assert.deepEqual(readdirSync(runtime).sort(), ['.blip-cli-install', 'blip-core', mac ? 'BlipKit.framework' : 'libblip.so'].sort());
+  // Installing again keeps a link to this clone. Another blip on PATH is reported, and said to win if it comes first.
+  writeFileSync(join(mocks, 'blip'), '#!/bin/sh\n', { mode: 0o700 });
+  const bin = join(home, '.local/bin');
+  const shadowed = run();
+  assert.equal(shadowed.status, 0, shadowed.stderr);
+  assert.ok(shadowed.stderr.includes(`warning: blip runs ${join(mocks, 'blip')}, which comes before ~/.local/bin`), shadowed.stderr);
+  const ahead = spawnSync('bash', [installer], { env: { ...env, PATH: `${bin}:${env.PATH}` }, encoding: 'utf8' });
+  assert.equal(ahead.status, 0, ahead.stderr);
+  assert.ok(ahead.stderr.includes(`note: another blip is at ${join(mocks, 'blip')}`), ahead.stderr);
+  assert.doesNotMatch(ahead.stderr, /warning: blip runs/);
+  rmSync(join(mocks, 'blip'));
+  // Blip's own launcher gives way only when asked, and the app itself stays.
+  mkdirSync(join(home, '.local/opt/blip/bin'), { recursive: true }); writeFileSync(join(home, '.local/opt/blip/bin/blip'), 'launcher');
+  rmSync(link); symlinkSync(join(home, '.local/opt/blip/bin/blip'), link);
+  assert.equal(run().status, 1);
+  const replaced = spawnSync('bash', [installer, '--replace-launcher'], { env, encoding: 'utf8' });
+  assert.equal(replaced.status, 0, replaced.stderr);
+  assert.equal(readlinkSync(link), fileURLToPath(new URL('../blip.mjs', import.meta.url)));
+  assert.equal(readFileSync(join(home, '.local/opt/blip/bin/blip'), 'utf8'), 'launcher');
   writeFileSync(join(runtime, 'keep'), 'old runtime');
   if (mac) {
     writeFileSync(join(mocks, 'codesign'), '#!/bin/sh\nexit 9\n', { mode: 0o700 });

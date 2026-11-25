@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync, statSync, realpathSync, symlinkSync, openSync, chmodSync, renameSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, appendFileSync, existsSync, readFileSync, statSync, realpathSync, symlinkSync, openSync, chmodSync, renameSync } from 'node:fs';
 import { tmpdir, hostname } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,7 +25,7 @@ const OTHER = { id: 'user-other', self: false, devices: [{ id: 'dev-theirs', nam
 
 function encodeState(st) {
   const parts = [];
-  if (st.email) parts.push(ld(201, s(203, st.email)));
+  if (st.email) parts.push(ld(201, Buffer.concat([s(203, st.email), s(204, st.deviceId ?? 'dev-here')])));
   else parts.push(ld(200, vi(1, st.reg ?? 0)));                        // Registration.status
   const users = (st.users ?? []).map((u) => ld(1, Buffer.concat([s(1, u.id), ld(2, Buffer.concat([vi(10, u.self ? 1 : 0),
     ...u.devices.map((d) => ld(7, Buffer.concat([s(1, d.id), ld(2, Buffer.concat([s(1, d.id), s(3, d.name), vi(6, d.here ? 1 : 0)]))])))]))])));
@@ -66,6 +66,7 @@ async function fakeBlip(dir, st, { garbage = false } = {}) {
         if (acted && name === 'TransferAcceptanceRequested' && st.afterAccept) acted.status = st.afterAccept;
         if (acted && name === 'TransferDeclineRequested') st.transfers.splice(st.transfers.indexOf(acted), 1);
         if (name === 'SendRegistrationCodeRequested') st.reg = 2;      // CodeSent
+        if (name === 'RemoveDeviceThenLogout') { st.onLogout?.(); if (!st.stuck) st.email = ''; if (st.dieOnLogout) st.failing = true; }
         if (name === 'RegistrationRequested' && str(ev[0]) === '123456') st.email = 'me@example.com';
         return c.write(Buffer.concat([frame(2, 1, Buffer.alloc(0)), frame(6, 2, Buffer.alloc(0))]));
       }
@@ -577,6 +578,82 @@ test('transfers shows where a received transfer was saved', async () => {
   const r = await blip(home, sock, ['transfers']);
   done();
   assert.equal(r.out, 't1\tin\tCompleted\tsaved=/home/x/Downloads/a.txt\n');
+});
+
+// What the engine (Linux 1.2.6) logged at logout, in a sandbox against a fake server.
+const REMOVED = (id) => `2026/11/25 21:19:13 INFO reducing event type=*event.InsertAnalyticsEvent event="name:\\"DeviceRemove\\"  props:{key:\\"device_id\\"  value:\\"${id}\\"}"\n`;
+const SIGNED_OUT = '2026/11/25 21:19:13 INFO reducing event type=*event.InsertAnalyticsEvent event="name:\\"SignOut\\""\n2026/11/25 21:19:13 INFO reducing event type=*event.Logout event=""\n';
+const OFFLINE = '2026/11/25 21:19:17 ERROR removing device tag=UserHandler error="performing request: Delete \\"https://example.invalid/devices/dev-here\\": network failure"\n';
+async function logout({ before = '', during = '', env = {}, noLog = false, ...more } = {}) {
+  const st = { email: 'me@example.com', users: [ME], ...more };
+  const { home, sock, done } = await setup(st);
+  const log = join(paths(home).own, 'app.log');
+  if (!noLog) { mkdirSync(dirname(log), { recursive: true }); writeFileSync(log, before); st.onLogout = () => appendFileSync(log, during); }
+  const r = await blip(home, sock, ['logout'], env);
+  done();
+  return { ...r, events: st.events.map((e) => e.name) };
+}
+
+test('logout reports the device as removed only when the engine logged it', async () => {
+  const r = await logout({ before: 'INFO older\n', during: REMOVED('dev-here') + SIGNED_OUT });
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.err, /signed out of me@example\.com and removed this device from your account/);
+  assert.deepEqual(r.events, ['RemoveDeviceThenLogout']);
+});
+
+test('logout exits 4 when the removal is not confirmed', async () => {
+  const cases = {
+    'the removal failed': { during: OFFLINE + SIGNED_OUT },
+    'the log says nothing': { during: SIGNED_OUT },
+    'the engine logs elsewhere': { noLog: true },
+    'an earlier logout was confirmed': { before: REMOVED('dev-here'), during: OFFLINE + SIGNED_OUT },
+    'another device was removed': { during: REMOVED('dev-phone') + SIGNED_OUT },
+    'a similar id was removed': { during: REMOVED('dev-here-2') + SIGNED_OUT },
+    'the session has no device id': { deviceId: '', during: REMOVED('') + SIGNED_OUT },
+    'other logged text imitates the line': { during: `2026/11/25 21:19:13 INFO reducing event type=*event.SomethingElse event="${REMOVED('dev-here').trim()}"\n${SIGNED_OUT}` },
+  };
+  for (const [what, opts] of Object.entries(cases)) {
+    const r = await logout(opts);
+    assert.equal(r.code, 4, `${what}: ${r.err}`);
+    assert.match(r.err, /signed out of me@example\.com on this machine, but Blip did not confirm .* may still be listed there\. Remove it in Blip on another device/, what);
+    assert.doesNotMatch(r.err, /and removed this device/, what);
+  }
+});
+
+test('logout reads a log that a restart began anew', async () => {
+  const home = { before: 'x'.repeat(4000) };
+  const st = { email: 'me@example.com', users: [ME] };
+  const s2 = await setup(st); const log = join(paths(s2.home).own, 'app.log');
+  mkdirSync(dirname(log), { recursive: true }); writeFileSync(log, home.before);
+  st.onLogout = () => writeFileSync(log, REMOVED('dev-here'));
+  const r = await blip(s2.home, s2.sock, ['logout']);
+  s2.done();
+  assert.equal(r.code, 0, r.err);
+});
+
+test('logout with no one signed in does nothing', async () => {
+  const r = await logout({ email: '' });
+  assert.equal(r.code, 0);
+  assert.equal(r.err.includes('not signed in'), true);
+  assert.deepEqual(r.events, []);
+});
+
+test('logout exits 3 when Blip does not sign out in time or stops answering', async () => {
+  const slow = await logout({ stuck: true, env: { BLIP_TIMEOUT_S: '1' } });
+  assert.equal(slow.code, 3); assert.match(slow.err, /has not signed out after 1 s.*check: blip status/);
+  const lost = await logout({ dieOnLogout: true });
+  assert.equal(lost.code, 3); assert.match(lost.err, /lost contact with Blip while signing out: .*check: blip status/);
+});
+
+test('decline checks its arguments before anything else', async () => {
+  const st = { users: [ME] };                                          // signed out
+  const { home, sock, done } = await setup(st);
+  const bare = await blip(home, sock, ['decline']);
+  const dir = await blip(home, sock, ['decline', 't1', '--dir', 'x']);
+  const offline = await blip(home, join(home, 'none'), ['decline']);
+  done();
+  for (const r of [bare, offline]) { assert.equal(r.code, 2); assert.match(r.err, /usage: blip decline <id>/); }
+  assert.equal(dir.code, 2); assert.match(dir.err, /--dir only goes with accept/);
 });
 
 test('folder and auto-accept show the engine\'s settings and send changes', async () => {

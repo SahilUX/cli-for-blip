@@ -6,7 +6,7 @@ CLI for Blip is an independent project. It is not affiliated with, endorsed by, 
 
 I made this for free, for Blip to implement if they want to. Blip has not approved or endorsed it.
 
-The command is `blip`. It runs Blip's native transfer engine directly and talks to its local RPC socket. It needs no GUI app, Java runtime, virtual display, or D-Bus session. The Node.js client has no npm dependencies; a small C launcher hosts the proprietary engine downloaded from Blip. Linux uses Blip 1.2.6; macOS uses the signed BlipKit framework from Blip 1.2.3.
+The command is `blip`. Blip's own Linux app uses the same name for its launcher, so read [The `blip` command name](#the-blip-command-name) if you have both. This command runs Blip's native transfer engine directly and talks to its local RPC socket. It needs no GUI app, Java runtime, virtual display, or D-Bus session. The Node.js client has no npm dependencies; a small C launcher hosts the proprietary engine downloaded from Blip. Linux uses Blip 1.2.6; macOS uses the signed BlipKit framework from Blip 1.2.3.
 
 ```sh
 blip login                          # sign in with the code Blip emails you
@@ -43,7 +43,7 @@ cd cli-for-blip
 
 `install.sh` builds `native/host.c`, installs the launcher and native library in `~/.local/lib/blip-cli`, and links `~/.local/bin/blip` to this checkout. It pins Linux Blip 1.2.6 and macOS Blip 1.2.3 because the hosting ABI is undocumented. Re-running it repairs the installation at that version. It stages and checks the replacement before switching, and restores the previous runtime if activation fails.
 
-If you already run the GUI app through `~/.local/bin/blip`, stop it and update that service before installing. That path becomes the CLI. See [Migrate from the desktop runtime](#migrate-from-the-linux-desktop-runtime).
+If you already run the GUI app through `~/.local/bin/blip`, the installer stops unless you choose to replace it. See [The `blip` command name](#the-blip-command-name) and [Migrate from the desktop runtime](#migrate-from-the-linux-desktop-runtime).
 
 Make sure `~/.local/bin` is on your `PATH`. On Debian and Ubuntu, `~/.profile` adds it for login shells only, so a non-interactive shell, as in `ssh server blip ...`, cron, or a service, doesn't find `blip`. Use the full path, `~/.local/bin/blip`, there. The same goes for `node` if it lives somewhere like nvm: `blip` runs it with `/usr/bin/env node`, so `node` has to be on that shell's `PATH` too.
 
@@ -52,6 +52,39 @@ To update the CLI, pull this repository and run `./install.sh` again. A running 
 Don't move or delete the clone while `blip` is installed. If you move it, relink from the new place with `ln -sfn "$PWD/blip.mjs" ~/.local/bin/blip`. Running `./install.sh` there also works; it downloads and reinstalls the pinned engine.
 
 If your clone still points at the repository's earlier name, `blip-cli`, GitHub redirects it. To use the new address, run `git remote set-url origin https://github.com/SahilUX/cli-for-blip.git` in the clone. You don't need to rename or move it.
+
+## The `blip` command name
+
+This CLI's command is `blip`, and Blip's own Linux app also calls its launcher `blip`. Only one of them can be `~/.local/bin/blip`. `install.sh` checks what is there first:
+
+| `~/.local/bin/blip` is | `install.sh` |
+|---|---|
+| Nothing | Creates the link to this CLI |
+| A link to a clone of this CLI, or to a `blip.mjs` that no longer exists | Points it at this clone |
+| Blip's launcher, a link to `~/.local/opt/blip/bin/blip` | Stops, unless you pass `--replace-launcher` |
+| Any other file, folder, or link | Stops and changes nothing. Move it first |
+
+To choose which one owns the name:
+
+- **This CLI:** run `./install.sh --replace-launcher`, or uninstall the Blip app first. `--replace-launcher` changes only that link. The app stays in `~/.local/opt/blip`, and its menu entry still starts it, because that entry uses the full path.
+- **Blip's launcher:** run `./install.sh --replace-launcher`, then give the CLI a name of your own and put the launcher back. Do this again after every update, and use your name wherever this README says `blip`:
+
+  ```sh
+  ln -sfn "$PWD/blip.mjs" ~/.local/bin/my-blip
+  ln -sfn ~/.local/opt/blip/bin/blip ~/.local/bin/blip
+  ```
+
+Blip's installer also refuses to replace this CLI's link. Remove `~/.local/bin/blip` before you run it.
+
+A `blip` elsewhere on your `PATH`, such as one from a packaged Blip app in `/usr/bin` or `/snap/bin`, isn't touched. Whichever directory comes first on `PATH` wins, and the wrong one may open the Blip app instead of running your command. `install.sh` warns when another `blip` comes first, and mentions one that comes later. It can only see the `PATH` it runs with, so check again in other shells, cron jobs, and services:
+
+```sh
+command -v blip      # which one this shell runs
+type -a blip         # every blip on PATH (bash and zsh)
+readlink ~/.local/bin/blip   # ends in /blip.mjs when it is this CLI
+```
+
+If the wrong one runs, put `~/.local/bin` first on `PATH`, or use the full path `~/.local/bin/blip`. A shell that was already open may remember the old one until you run `hash -r` or open a new shell. A shell alias or function named `blip` also takes precedence.
 
 ## Platform paths
 
@@ -75,7 +108,7 @@ The Mac CLI has its own profile. The CLI does not read or migrate the desktop ap
 Run these before you delete the clone:
 
 ```sh
-blip logout              # sign out and remove this machine from your device list
+blip logout              # sign out and remove this machine from your device list (exit code 4: removal not confirmed)
 blip stop                # stop the background app that blip started
 rm ~/.local/bin/blip
 rm -rf ~/.cache/blip-cli "${XDG_CONFIG_HOME:-$HOME/.config}/blip-cli"
@@ -103,9 +136,19 @@ code: 123456
 signed in as you@example.com, this device is "home-server"
 ```
 
-The session survives restarts, so you sign in once. On macOS this is separate from signing in to the desktop app. `blip logout` signs out and removes this machine from your device list, which is what **Sign out** in the app's settings does.
+The session survives restarts, so you sign in once. On macOS this is separate from signing in to the desktop app. `blip logout` asks Blip to remove this machine from your device list and sign out, which is what **Sign out** in the app's settings does.
 
-`login` and `logout` follow Blip's sign-in flow through RPC. Email-code login has been verified on macOS with the user entering the code in a terminal. Fresh Linux login and real-service logout remain experimental.
+Blip's engine signs out on this machine even if removing the device failed, for example because you are offline. `logout` checks the engine's log and reports what it found:
+
+| Exit code | What happened |
+|---|---|
+| 0 | Signed out, and the engine logged that the device was removed from your account. Also when no one was signed in |
+| 4 | Signed out on this machine, but the removal is not confirmed. The device may still be on your account |
+| 3 | Not signed out after 30 seconds (or `BLIP_TIMEOUT_S`, if smaller), or `blip` lost contact with the engine. The engine may still finish, so check `blip status` |
+
+After exit code 4, remove the device in Blip on another device with **Remove this device**. You can also run `blip login` and then `blip logout` on this machine once you are online. Exit code 4 is also what you get when the engine's log isn't in the log file listed under [Platform paths](#platform-paths), as with a Blip that `blip` did not start.
+
+`login` and `logout` follow Blip's sign-in flow through RPC. Email-code login has been verified on macOS and Linux x86-64, and a real logout on Linux x86-64. Real-service logout on macOS is still unverified. The log check was tested against the Linux engine. If the macOS engine logs it differently, `logout` exits with code 4 even when the removal worked.
 
 ## The background app
 
@@ -145,7 +188,7 @@ Some systems stop a user's processes at logout (systemd-logind `KillUserProcesse
 
 On Linux, the native host uses the same `~/.local/share/net.blip.Blip` data directory and `~/.cache/net.blip.Blip/sock` socket as the Linux desktop app. Stop the old app before starting the native host. Your existing sign-in and device identity are preserved.
 
-If services launch the app through `~/.local/bin/blip`, stop and disable them before installing this CLI. After `./install.sh`, start the native host with `blip start`. Configure boot startup to run that command rather than launching the old desktop executable or its Xvfb wrapper.
+If services launch the app through `~/.local/bin/blip`, stop and disable them before installing this CLI. After `./install.sh --replace-launcher`, start the native host with `blip start`. Configure boot startup to run that command rather than launching the old desktop executable or its Xvfb wrapper.
 
 On Linux, once the native host works, remove the old desktop installation with its official uninstaller. For the tarball installation, download the installer from `https://static.blip.net/linux/install.sh` and run it with `--uninstall`. Keep Blip's data directory. The native runtime lives separately in `~/.local/lib/blip-cli`.
 
@@ -243,13 +286,14 @@ Control characters in names, ids, and error texts from Blip are printed as `\uXX
 | 0 | Success. For `send`, the transfer completed |
 | 1 | Error: not signed in, a failed or cancelled transfer, an unknown or ambiguous device, an unknown transfer id, an `accept` or `decline` that Blip did not act on, a missing or refused path, Blip not running (`status`), or Blip failed to start or stop |
 | 2 | Wrong usage, such as `send` with no path, an empty path, no device to send to, or an invalid `BLIP_TIMEOUT_S`, `decline` with no id, or an unknown `auto-accept` value |
-| 3 | `send` gave up waiting, or lost contact with Blip after creating the transfer. The transfer stays queued in Blip |
+| 3 | `send` gave up waiting, or lost contact with Blip after creating the transfer. The transfer stays queued in Blip. Also `logout` when Blip did not sign out in time or stopped answering |
+| 4 | `logout` signed out on this machine, but Blip did not confirm removing the device from your account. See [Sign in](#sign-in) |
 | 130, 143 | `send` was interrupted (Ctrl-C) or terminated, and the transfer stays queued in Blip. `login` also exits with 130 on Ctrl-C |
 
 | Variable | Default | Effect |
 |---|---|---|
 | `BLIP_TO` | | Device `send` uses when there is no `--to` |
-| `BLIP_TIMEOUT_S` | `300` | Seconds `send` waits for completion before exiting with code 3. Must be a positive number |
+| `BLIP_TIMEOUT_S` | `300` | Seconds `send` waits for completion before exiting with code 3. Must be a positive number. A smaller value also shortens the waits of `accept`, `decline`, and `logout` |
 | `BLIP_DEVICE_NAME` | hostname up to the first dot | Device name `login` registers, unless `--name` is given |
 | `BLIP_APP` | `~/.local/lib/blip-cli/blip-core` | Path of the native host executable, which takes library, cache directory, and data directory arguments. On macOS it must also answer `--identity <pid>`, as the installed `blip-core` does |
 | `BLIP_LIB` | See platform paths | Path of the native library or intact Mac framework binary |
@@ -386,7 +430,7 @@ DRPC frames look like this: `control byte | varint stream | varint message | var
 | `/rpc.Service/GetState` | returns a message whose field 2 is `State`. The session is a oneof of `Registration` (tag 200, signed out) and `Auth` (tag 201, signed in). Devices are under `State.users` (tag 500) and transfers under tag 600 |
 | `/rpc.Service/Dispatch` | takes `DispatchRequest{event: Any}` |
 
-Signing in is two events: `event.SendRegistrationCodeRequested{email, device_name}`, then `event.RegistrationRequested{code, device_dedupe_id, device_name, device_kind}`. `Registration.status` goes 0 NotStarted, 1 SendingCode, 2 CodeSent, 3 Registering, and errors land in `Registration.error` (tag 999). The dedupe id is the first 36 characters of `hardwareinfo/device-dedupe-id.txt` in the session data directory (see [Platform paths](#platform-paths)), so signing in again replaces this device instead of adding one. On Linux it is the file the desktop app uses too; on macOS it belongs to the separate CLI profile. If the file doesn't exist yet, `blip login` creates it with a new random UUID. If it doesn't start with a UUID, `login` stops and names the file. Signing out is `event.RemoveDeviceThenLogout{}`.
+Signing in is two events: `event.SendRegistrationCodeRequested{email, device_name}`, then `event.RegistrationRequested{code, device_dedupe_id, device_name, device_kind}`. `Registration.status` goes 0 NotStarted, 1 SendingCode, 2 CodeSent, 3 Registering, and errors land in `Registration.error` (tag 999). The dedupe id is the first 36 characters of `hardwareinfo/device-dedupe-id.txt` in the session data directory (see [Platform paths](#platform-paths)), so signing in again replaces this device instead of adding one. On Linux it is the file the desktop app uses too; on macOS it belongs to the separate CLI profile. If the file doesn't exist yet, `blip login` creates it with a new random UUID. If it doesn't start with a UUID, `login` stops and names the file. Signing out is `event.RemoveDeviceThenLogout{}`. The engine sends one `DELETE /devices/<id>` for its own device. A failure only logs `removing device` and an error. After a success it logs an `InsertAnalyticsEvent` named `DeviceRemove` with the device id. Either way it then signs out, so `logout` looks for that success line in the log.
 
 Receiving: `event.TransferAcceptanceRequested{transfer_id, save_path}` (the path is optional), `event.TransferDeclineRequested{transfer_id}`, `event.TransferSetAutoAccept{auto_accept}` and `event.TransferSetCustomDefaultSavePath{path}`. `State.config` (tag 100) holds `auto_accept_disabled` (tag 2) and `custom_default_save_path` (tag 4); with no custom path the engine saves to `~/Downloads`. A transfer's saved location is tag 501. A signed-out engine logs these events but did not report the change in `State.config`, and a signed-in engine hasn't been checked, so `folder <path>` and `auto-accept on|off` require a sign-in and fail with a timeout if Blip never reports the change.
 

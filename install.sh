@@ -6,7 +6,9 @@ here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 link="$HOME/.local/bin/blip"
 runtime="$HOME/.local/lib/blip-cli"
 
-(( $# == 0 )) || { echo 'usage: ./install.sh (it takes no arguments)' >&2; exit 2; }
+replace_launcher=false
+if (( $# == 1 )) && [[ $1 == --replace-launcher ]]; then replace_launcher=true
+elif (( $# )); then echo 'usage: ./install.sh [--replace-launcher]' >&2; exit 2; fi
 os=$(uname -s)
 arch=$(uname -m)
 node -e 'process.exit(+process.versions.node.split(".")[0] >= 22 ? 0 : 1)' 2>/dev/null ||
@@ -47,8 +49,21 @@ if [[ -e $runtime || -L $runtime ]]; then
     { echo "refusing to replace an unmanaged install: $runtime" >&2; exit 1; }
 fi
 if [[ -e $link || -L $link ]]; then
-  [[ -L $link ]] && { [[ $(readlink -- "$link") == */blip.mjs ]] || [[ $(readlink -- "$link") == "$HOME/.local/opt/blip/bin/blip" ]]; } ||
-    { echo "refusing to replace an existing file: $link" >&2; exit 1; }
+  # A link to a clone of this CLI is updated, also when that clone moved away.
+  # Blip's own installer puts its launcher link here too: that one is replaced
+  # only when asked. Anything else belongs to someone else.
+  target=
+  [[ ! -L $link ]] || target=$(readlink -- "$link")
+  if [[ $target == "$HOME/.local/opt/blip/bin/blip" ]]; then
+    [[ $replace_launcher == true ]] || {
+      echo "refusing to replace Blip's own launcher: $link" >&2
+      echo 'Uninstall the Blip app first, or run ./install.sh --replace-launcher to give this CLI that name.' >&2
+      exit 1
+    }
+  else
+    [[ $target == */blip.mjs ]] && { [[ ! -e $link ]] || { [[ -f $link ]] && [[ $(sed -n 2p -- "$link") == '// blip: headless command line for the Blip '* ]]; }; } ||
+      { echo "refusing to replace an existing file: $link" >&2; exit 1; }
+  fi
 fi
 
 mkdir -p -- "${runtime%/*}" "${link%/*}"
@@ -109,6 +124,15 @@ committed=true
 trap 'exit 130' INT
 trap 'exit 143' TERM
 [[ :$PATH: == *":$HOME/.local/bin:"* ]] || echo 'note: add ~/.local/bin to your PATH to run blip' >&2
+# Another blip on PATH, such as a packaged Blip app, can run instead of this one.
+first=$(type -P blip) || first=
+if [[ -n $first && ! $first -ef $link ]]; then
+  echo "warning: blip runs $first, which comes before ~/.local/bin on your PATH. Use $link, or put ~/.local/bin first." >&2
+elif [[ -n $first ]]; then
+  while IFS= read -r other; do
+    [[ $other -ef $link ]] || echo "note: another blip is at $other. Your PATH picks $first first." >&2
+  done < <(type -aP blip)
+fi
 echo 'blip is installed with the native engine. Next: blip login'
 if [[ $os == Linux ]]; then
   echo 'For an existing session, stop its old Blip process before running blip start.'
