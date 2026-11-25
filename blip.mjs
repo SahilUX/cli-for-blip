@@ -5,7 +5,7 @@
 // Every command except status and stop starts the native engine in the background if it isn't running.
 // Sends only to the signed-in account's own devices; matching is by device id or exact name, case-insensitive.
 //   blip login [email]            sign in with the code Blip emails you
-//   blip logout                   sign out and remove this device from the account
+//   blip logout                   sign out and remove this device from the account (exit 4: removal not confirmed)
 //   blip send <path>... [--to d]  send files/folders to one of your devices, wait for completion
 //   blip accept [id] [--dir d]    accept an incoming transfer (no id: every one that is waiting)
 //   blip decline <id>             decline an incoming transfer
@@ -14,7 +14,7 @@
 //   blip devices | transfers [id] | status | start | stop
 import { randomUUID } from 'node:crypto';
 import { resolve, dirname, basename } from 'node:path';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, openSync, rmSync, renameSync, chmodSync, realpathSync, statSync, lstatSync, readlinkSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, openSync, closeSync, readSync, fstatSync, rmSync, renameSync, chmodSync, realpathSync, statSync, lstatSync, readlinkSync } from 'node:fs';
 import { homedir, hostname, type, release } from 'node:os';
 import { spawn, execFileSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
@@ -71,7 +71,7 @@ async function getState() {
 }
 function session(st) {                                                                     // oneof session: 200 Registration, 201 Auth
   const auth = st.find((f) => f.tag === 201);
-  if (auth) return { email: str(fields(auth.value).find((f) => f.tag === 203)) };
+  if (auth) { const a = fields(auth.value); return { email: str(a.find((f) => f.tag === 203)), deviceId: str(a.find((f) => f.tag === 204)) }; }
   const r = fields(st.find((f) => f.tag === 200)?.value ?? Buffer.alloc(0)); const err = r.find((f) => f.tag === 999);
   return { reg: REG[r.find((f) => f.tag === 1)?.value ?? 0], err: err ? str(fields(err.value).find((f) => f.tag === 2)) : '' };
 }
@@ -209,9 +209,13 @@ async function stop() {
   rmSync(TMP, { recursive: true, force: true });
   console.error('Blip stopped');
 }
-async function signedIn() {
+async function loadedSession() {
   let me = session(await getState());
   for (let i = 0; !me.email && started && i < 10; i++) { await sleep(500); me = session(await getState()); }   // a freshly started app may still be loading its session
+  return me;
+}
+async function signedIn() {
+  const me = await loadedSession();
   if (!me.email) die('not signed in (run: blip login)');
   return me;
 }
@@ -246,6 +250,21 @@ function dedupeId() {
   const id = readFileSync(path, 'utf8').trim().slice(0, 36);
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) die(`${path} does not start with a device id. Move it away and run blip login again`);
   return id;
+}
+// At logout the engine asks the server to remove this device, then signs out even if that failed: it only logs the
+// error. When the server accepted the removal it logs a DeviceRemove event naming the device, before it signs out.
+// Only that line counts as proof, and only in what the log gained after the request. Anything else is unconfirmed,
+// including an engine that blip did not start, whose log is somewhere else.
+const logSize = () => { try { return statSync(LOG).size; } catch { return 0; } };
+function removalLogged(from, deviceId) {
+  let log;
+  try {
+    log = openSync(LOG, 'r');
+    const { size } = fstatSync(log); const start = size < from ? 0 : from;                // smaller: a restart began a new log
+    const buf = Buffer.alloc(Math.min(size - start, 4 << 20));
+    const text = buf.toString('utf8', 0, readSync(log, buf, 0, buf.length, start));
+    return !!deviceId && text.split('\n').some((l) => /^\S+ \S+ INFO reducing event type=\*event\.InsertAnalyticsEvent event="name:\s*\\"DeviceRemove\\"/.test(l) && l.includes(`\\"${deviceId}\\"`));
+  } catch { return false; } finally { if (log !== undefined) closeSync(log); }
 }
 // Blip's Config (State tag 100): auto_accept_disabled (2) and custom_default_save_path (4). Without a custom path the engine saves to ~/Downloads.
 function receiveSettings(st) {
@@ -324,6 +343,11 @@ if (cmd === 'send') {
   }
 }
 
+if (cmd === 'decline') {
+  if (!args[0]) die('usage: blip decline <id> (ids: blip transfers)', 2);
+  if (flag.dir) die('--dir only goes with accept', 2);
+}
+
 if (cmd === 'stop') { await stop(); process.exit(0); }
 // status reads the state once and never starts Blip, even if it stops between two calls.
 const current = cmd === 'status' && await getState().catch((e) => { if (e.syscall === 'connect' && ['ENOENT', 'ECONNREFUSED'].includes(e.code)) return null; throw e; });
@@ -370,11 +394,21 @@ if (cmd === 'start') {
   }
   rl.close();
 } else if (cmd === 'logout') {
-  const me = session(await getState());
+  const me = await loadedSession();
   if (!me.email) die('not signed in', 0);
-  await dispatch('RemoveDeviceThenLogout');
-  await waitFor((st) => !session(st).email, 30000, 'Blip to sign out');
-  console.error(`signed out of ${safe(me.email)}`);
+  const from = logSize();
+  const seconds = timeout > 0 && Number.isFinite(timeout) ? Math.min(timeout, 30) : 30;
+  const pending = 'Blip may still sign out and remove this device later. Until then the device may still be listed on your account, even if blip status says not signed in. Check the device list in Blip on another device';
+  try {
+    await dispatch('RemoveDeviceThenLogout');
+    const deadline = Date.now() + seconds * 1000;
+    while (session(await getState()).email) {
+      if (Date.now() > deadline) die(`Blip has not signed out after ${seconds} s. It waits for its server to answer; ${pending}`, 3);
+      await sleep(500);
+    }
+  } catch (e) { die(`lost contact with Blip while signing out: ${safe(e.message).slice(0, 200)}; ${pending}`, 3); }
+  if (!removalLogged(from, me.deviceId)) die(`signed out of ${safe(me.email)} on this machine, but Blip did not confirm that it removed this device from your account, so the device may still be listed there. Remove it in Blip on another device, or run blip login and then blip logout while online (see ${LOG})`, 4);
+  console.error(`signed out of ${safe(me.email)} and removed this device from your account`);
 } else if (cmd === 'devices') {
   await signedIn();
   for (const d of await ownDevices()) console.log(`${safe(d.name)}${d.isThis ? ' (this device)' : ''}\t${safe(d.deviceId)}`);
@@ -393,15 +427,12 @@ if (cmd === 'start') {
     if (t.direction !== 'in') die(`${safe(t.id)} is an outgoing transfer; only incoming ones can be ${cmd}ed`);
     if (['Completed', 'Cancelled'].includes(t.status)) die(`${safe(t.id)} is already ${t.status}; nothing to ${cmd}`);
     targets = [t];
-  } else if (cmd === 'accept') {
+  } else {
     targets = all.filter((t) => t.direction === 'in' && t.status === 'Invited');
     if (!targets.length) { console.error('no incoming transfer is waiting to be accepted'); process.exit(0); }
-  } else die('usage: blip decline <id> (ids: blip transfers)', 2);
-  let dir = '';
-  if (flag.dir) {
-    if (cmd !== 'accept') die('--dir only goes with accept', 2);
-    dir = resolve(flag.dir); mkdirSync(dir, { recursive: true });
   }
+  let dir = '';
+  if (flag.dir) { dir = resolve(flag.dir); mkdirSync(dir, { recursive: true }); }
   const waitMs = timeout > 0 && Number.isFinite(timeout) ? Math.min(timeout, 15) * 1000 : 15000;
   let failed = false;
   for (const t of targets) {
