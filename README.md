@@ -1,8 +1,12 @@
-# blip
+# CLI for Blip
 
-Send files and folders to your own [Blip](https://blip.net) devices from the terminal, on Linux or macOS without opening the desktop app.
+An unofficial command line tool that works with [Blip](https://blip.net). Send files and folders to your own Blip devices from the terminal, on Linux or macOS without opening the desktop app.
 
-`blip` runs Blip's native transfer engine directly and talks to its local RPC socket. It needs no GUI app, Java runtime, virtual display, or D-Bus session. It is unofficial and not affiliated with Blip Studio Inc. The Node.js client has no npm dependencies; a small C launcher hosts the proprietary engine downloaded from Blip. Linux uses Blip 1.2.6; macOS uses the signed BlipKit framework from Blip 1.2.3.
+CLI for Blip is an independent project. It is not affiliated with, endorsed by, or sponsored by Blip Studio Inc. Blip is a trademark of Blip Studio Inc., and its name appears here only to say what this tool works with.
+
+I made this for free, for Blip to implement if they want to. Blip has not approved or endorsed it.
+
+The command is `blip`. It runs Blip's native transfer engine directly and talks to its local RPC socket. It needs no GUI app, Java runtime, virtual display, or D-Bus session. The Node.js client has no npm dependencies; a small C launcher hosts the proprietary engine downloaded from Blip. Linux uses Blip 1.2.6; macOS uses the signed BlipKit framework from Blip 1.2.3.
 
 ```sh
 blip login                          # sign in with the code Blip emails you
@@ -23,7 +27,7 @@ The installer downloads the official archive and verifies its pinned SHA-256 che
 
 ## Use with an agent
 
-Install the reusable [blip-cli-skill](https://github.com/SahilUX/blip-cli-skill#readme) to let an agent send files with this CLI. Its README includes installation instructions for agent skill directories.
+Install the reusable [cli-for-blip-skill](https://github.com/SahilUX/cli-for-blip-skill#readme) to let an agent send files with this CLI. Its README includes installation instructions for agent skill directories.
 
 The skill provides instructions only. It requires this CLI, Node.js 22 or newer, the native Blip engine installed by this repository, an account signed in on the sending machine, and Blip on the receiving device. Installing the skill does not install or authenticate any of those prerequisites.
 
@@ -32,8 +36,8 @@ The skill provides instructions only. It requires this CLI, Node.js 22 or newer,
 Clone the repository into a directory that only you can write to, such as one under your home directory. `~/.local/bin/blip` links into the clone, so whoever can write to the clone controls what `blip` runs.
 
 ```sh
-git clone https://github.com/SahilUX/blip-cli.git
-cd blip-cli
+git clone https://github.com/SahilUX/cli-for-blip.git
+cd cli-for-blip
 ./install.sh
 ```
 
@@ -47,7 +51,11 @@ To update the CLI, pull this repository and run `./install.sh` again. A running 
 
 Don't move or delete the clone while `blip` is installed. If you move it, relink from the new place with `ln -sfn "$PWD/blip.mjs" ~/.local/bin/blip`. Running `./install.sh` there also works; it downloads and reinstalls the pinned engine.
 
+If your clone still points at the repository's earlier name, `blip-cli`, GitHub redirects it. To use the new address, run `git remote set-url origin https://github.com/SahilUX/cli-for-blip.git` in the clone. You don't need to rename or move it.
+
 ## Platform paths
+
+The install, config, cache, and macOS profile paths still use the project's earlier name, `blip-cli`, so existing installations keep working.
 
 | Purpose | Linux | macOS |
 |---|---|---|

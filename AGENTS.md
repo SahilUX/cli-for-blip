@@ -1,4 +1,8 @@
-# blip-cli
+# CLI for Blip
+
+Unofficial, works with Blip, not affiliated with or endorsed by Blip Studio Inc.
+The earlier name was blip-cli. Keep the `blip` command, the `blip-cli` paths, and the
+`blip-cli` client name and app id unchanged until the maintainer picks replacements.
 
 Zero-dependency Node (>=22) client for the local DRPC socket of Blip's native
 Linux and macOS engines. `native/host.c` hosts the engine without launching
