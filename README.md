@@ -4,6 +4,8 @@ An unofficial command line tool that works with [Blip](https://blip.net). Send f
 
 CLI for Blip is an independent project. It is not affiliated with, endorsed by, or sponsored by Blip Studio Inc. Blip is a trademark of Blip Studio Inc., and its name appears here only to say what this tool works with.
 
+I made this for free, for Blip to implement if they want to. Blip has not approved or endorsed it.
+
 The command is `blip`. It runs Blip's native transfer engine directly and talks to its local RPC socket. It needs no GUI app, Java runtime, virtual display, or D-Bus session. The Node.js client has no npm dependencies; a small C launcher hosts the proprietary engine downloaded from Blip. Linux uses Blip 1.2.6; macOS uses the signed BlipKit framework from Blip 1.2.3.
 
 ```sh
