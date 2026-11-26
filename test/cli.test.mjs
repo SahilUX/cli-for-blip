@@ -696,19 +696,25 @@ test('a device list from before the sync is used only for an exact device id', a
   const { home, sock, done } = await setup(st);
   writeFileSync(join(home, 'a.txt'), 'hi');
   const env = { BLIP_TIMEOUT_S: '1' };
+  for (const [dir, to] of [['cfg-name', 'Pixel 8'], ['cfg-id', 'dev-phone']]) { mkdirSync(join(home, dir, 'blip-cli'), { recursive: true }); writeFileSync(join(home, dir, 'blip-cli/config.json'), JSON.stringify({ to })); }
   const list = await blip(home, sock, ['devices'], env);
   const byName = await blip(home, sock, ['send', 'a.txt', '--to', 'Pixel 8'], env);
   const onlyOne = await blip(home, sock, ['send', 'a.txt'], env);
   const byId = await blip(home, sock, ['send', 'a.txt', '--to', 'dev-phone'], env);
+  const rememberedName = await blip(home, sock, ['send', 'a.txt'], { ...env, XDG_CONFIG_HOME: join(home, 'cfg-name') });
+  const rememberedId = await blip(home, sock, ['send', 'a.txt'], { ...env, XDG_CONFIG_HOME: join(home, 'cfg-id') });
   const created = st.events.filter((e) => e.name === 'TransferCreateRequested').length;
   st.syncAt = 0;                                                       // now the sync arrives
   const synced = await blip(home, sock, ['send', 'a.txt', '--to', 'Pixel 8'], env);
   done();
   assert.equal(list.code, 0); assert.match(list.err, /note: Blip has not finished syncing your devices .* may be out of date/);
   assert.equal(list.out, 'server (this device)\tdev-here\nPixel 8\tdev-phone\n');
-  for (const r of [byName, onlyOne]) { assert.equal(r.code, 1, r.err); assert.match(r.err, /has not finished syncing .*pass the device id from blip devices with --to/); }
+  assert.equal(byName.code, 1, byName.err); assert.match(byName.err, /has not finished syncing .*pass the device id from blip devices with --to/);
+  assert.equal(onlyOne.code, 2, onlyOne.err); assert.match(onlyOne.err, /which device\? pass --to <device>/);
   assert.equal(byId.code, 0, byId.err);
-  assert.equal(created, 1);
+  assert.equal(rememberedName.code, 1, rememberedName.err); assert.match(rememberedName.err, /has not finished syncing/);
+  assert.equal(rememberedId.code, 0, rememberedId.err);
+  assert.equal(created, 2);
   assert.equal(synced.code, 1); assert.match(synced.err, /ambiguous device "Pixel 8"/);
 });
 

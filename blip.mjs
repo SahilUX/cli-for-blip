@@ -493,8 +493,8 @@ if (cmd === 'start') {
   const remembered = typeof config().to === 'string' ? config().to : '';
   // An unsynced list may miss a device of the same name, so it can't settle a name or pick the only device.
   const device = flag.to || process.env.BLIP_TO || remembered || (fresh && others.length === 1 ? others[0].name : '');
-  if (!fresh && !others.some((d) => d.deviceId === device)) die(`${unsyncedNote()}. To send anyway, pass the device id from blip devices with --to`);
   if (!device) die('which device? pass --to <device> (see: blip devices). blip remembers it for next time', 2);
+  if (!fresh && !others.some((d) => d.deviceId === device)) die(`${unsyncedNote()}. To send anyway, pass the device id from blip devices with --to`);
   const key = (n) => n.normalize('NFC').toLowerCase();
   const matches = others.filter((d) => d.deviceId === device || key(d.name) === key(device));
   if (matches.length !== 1) die(`${matches.length ? 'ambiguous' : 'no such'} device "${safe(device)}" among your own devices (see: blip devices)`);

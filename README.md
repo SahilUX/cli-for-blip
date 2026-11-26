@@ -229,7 +229,7 @@ A folder goes with everything in it, including hidden files such as `.git` or `.
 blip send another.pdf
 ```
 
-The device is picked in this order: `--to` (or `-t`), then `BLIP_TO`, then the remembered device in the platform config file, then your only other device if you have just one. An empty value counts as unset. Without any of these, `send` exits with code 2 and asks for `--to`.
+The device is picked in this order: `--to` (or `-t`), then `BLIP_TO`, then the remembered device in the platform config file, then your only other device if you have just one. An empty value counts as unset. Without any of these, `send` exits with code 2 and asks for `--to`. The only-device fallback needs a synced device list (see [Blip runs but doesn't answer](#blip-runs-but-doesnt-answer)).
 
 A few rules about the device:
 
@@ -354,10 +354,10 @@ A bare `timeout` error means the socket accepted the connection but the app did 
 Right after `blip login` or a start, the engine's device list is missing or out of date until its first sync with Blip's server. `devices` and `send` wait for that sync for up to 15 seconds (or `BLIP_TIMEOUT_S`, if smaller). For `send` this wait comes first, before the transfer and its own `BLIP_TIMEOUT_S` wait, so the two can add up. If the sync doesn't come:
 
 - With no device list at all, both stop with `Blip has not loaded your devices from its server after 15 s (is this machine online?)` and exit code 1.
-- With a list from before the sync, `devices` prints it after a `note:` on stderr saying it may be out of date. `send` uses it only when you name the device by its id from `blip devices`. A name, a remembered device, or the only-device fallback stops with exit code 1, because a device with the same name may be missing from the old list.
+- With a list from before the sync, `devices` prints it after a `note:` on stderr saying it may be out of date. `send` uses it only when the device you name, with `--to`, `BLIP_TO` or the remembered device, is a device id from `blip devices`. A device name stops with exit code 1, because a device with the same name may be missing from the old list. With no device named, `send` doesn't fall back to your only other device and exits with code 2, asking for `--to`.
 - If the engine says it has synced but the list still doesn't name this device, the error is `can't tell which devices are yours` at the end of the wait.
 
-It isn't known whether the engine clears its sync flag when one account signs out and another signs in within one run. So `blip` doesn't rely on the flag alone: it also needs a list that names this device. Check the network and try again.
+It isn't known whether the engine clears its sync flag when one account signs out and another signs in within one run. So `blip` doesn't rely on the flag alone: it also needs a list that names this device. On a Linux engine that had been running and signed in for a long time, `devices` found the flag set and answered at once, with no note. Check the network and try again.
 
 `refusing <socket>: it is not a socket you own` means the path in `BLIP_SOCK` (or the default path) is not a socket, or another user owns it.
 
