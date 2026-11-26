@@ -232,19 +232,25 @@ function devicesIn(st) {
 }
 // State.messaging (tag 400) initial_sync_complete (3): the engine has had its first sync with Blip's server.
 const synced = (st) => fields(st.find((f) => f.tag === 400)?.value ?? Buffer.alloc(0)).find((f) => f.tag === 3)?.value === 1;
-// Right after sign-in the device list only arrives with that first sync, so wait for it before giving up.
+// Right after sign-in or a start the device list is missing or out of date until that first sync, so wait for both
+// the flag and a list that names this device. The flag alone is not trusted: it isn't known whether the engine clears
+// it when one account signs out and another signs in, so even a synced engine gets the whole wait before an error.
+// At the deadline an unsynced list is still returned, marked, for callers that can use it safely.
+const syncWait = () => (timeout > 0 && Number.isFinite(timeout) ? Math.min(timeout, 15) : 15);
 async function ownDevices() {
-  const seconds = timeout > 0 && Number.isFinite(timeout) ? Math.min(timeout, 15) : 15;
-  const deadline = Date.now() + seconds * 1000;
+  const deadline = Date.now() + syncWait() * 1000;
   for (;;) {
     const st = await getState();
-    const out = devicesIn(st);
-    if (out) return out;
-    if (synced(st)) die("can't tell which devices are yours (is this a supported Blip version?)");
-    if (Date.now() > deadline) die(`Blip has not loaded your devices from its server after ${seconds} s (is this machine online?). Try again in a moment`);
+    const out = devicesIn(st), done = synced(st);
+    if (out && done) return { devices: out, synced: true };
+    if (Date.now() > deadline) {
+      if (out) return { devices: out, synced: false };
+      die(done ? "can't tell which devices are yours (is this a supported Blip version?)" : `Blip has not loaded your devices from its server after ${syncWait()} s (is this machine online?). Try again in a moment`);
+    }
     await sleep(500);
   }
 }
+const unsyncedNote = () => `Blip has not finished syncing your devices with its server after ${syncWait()} s (is this machine online?), so this list may be out of date`;
 async function transfers() {
   return entries(await getState(), 600).map(({ key, val }) => {
     const t = fields(val); const g = (n) => t.find((f) => f.tag === n);
@@ -425,7 +431,9 @@ if (cmd === 'start') {
   console.error(`signed out of ${safe(me.email)} and removed this device from your account`);
 } else if (cmd === 'devices') {
   await signedIn();
-  for (const d of await ownDevices()) console.log(`${safe(d.name)}${d.isThis ? ' (this device)' : ''}\t${safe(d.deviceId)}`);
+  const { devices, synced: fresh } = await ownDevices();
+  if (!fresh) console.error(`note: ${unsyncedNote()}`);
+  for (const d of devices) console.log(`${safe(d.name)}${d.isThis ? ' (this device)' : ''}\t${safe(d.deviceId)}`);
 } else if (cmd === 'transfers') {
   await signedIn();
   const list = (await transfers()).filter((t) => !args[0] || t.id === args[0]);
@@ -480,9 +488,12 @@ if (cmd === 'start') {
   console.log(`auto-accept is ${receiveSettings(await getState()).autoAccept ? 'on' : 'off'}`);
 } else if (cmd === 'send') {
   await signedIn();
-  const others = (await ownDevices()).filter((d) => !d.isThis);
+  const { devices, synced: fresh } = await ownDevices();
+  const others = devices.filter((d) => !d.isThis);
   const remembered = typeof config().to === 'string' ? config().to : '';
-  const device = flag.to || process.env.BLIP_TO || remembered || (others.length === 1 ? others[0].name : '');
+  // An unsynced list may miss a device of the same name, so it can't settle a name or pick the only device.
+  const device = flag.to || process.env.BLIP_TO || remembered || (fresh && others.length === 1 ? others[0].name : '');
+  if (!fresh && !others.some((d) => d.deviceId === device)) die(`${unsyncedNote()}. To send anyway, pass the device id from blip devices with --to`);
   if (!device) die('which device? pass --to <device> (see: blip devices). blip remembers it for next time', 2);
   const key = (n) => n.normalize('NFC').toLowerCase();
   const matches = others.filter((d) => d.deviceId === device || key(d.name) === key(device));

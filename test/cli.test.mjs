@@ -73,6 +73,7 @@ async function fakeBlip(dir, st, { garbage = false } = {}) {
       }
       st.reads = (st.reads ?? 0) + 1;
       if (st.syncAfter && st.reads >= st.syncAfter) { st.users = st.later; st.synced = true; }
+      if (st.syncAt !== undefined && Date.now() >= st.syncAt) { st.users = st.later; st.synced = true; }
       if (st.failing) return c.write(frame(3, 2, Buffer.concat([Buffer.alloc(8), Buffer.from('boom')])));
       c.write(Buffer.concat([frame(2, 1, encodeState(st)), frame(6, 2, Buffer.alloc(0))]));
     });
@@ -667,7 +668,7 @@ test('devices waits for the first sync after sign-in, and fails clearly without 
   Object.assign(st, { users: [], synced: false, syncAfter: 0 });
   const never = await blip(home, sock, ['devices'], { BLIP_TIMEOUT_S: '1' });
   Object.assign(st, { users: [OTHER], synced: true });
-  const wrong = await blip(home, sock, ['devices']);
+  const wrong = await blip(home, sock, ['devices'], { BLIP_TIMEOUT_S: '1' });
   done();
   assert.equal(late.code, 0, late.err);
   assert.equal(late.out, 'server (this device)\tdev-here\nPixel 8\tdev-phone\n');
@@ -675,14 +676,40 @@ test('devices waits for the first sync after sign-in, and fails clearly without 
   assert.equal(wrong.code, 1); assert.match(wrong.err, /can't tell which devices are yours \(is this a supported Blip version\?\)/);
 });
 
-test('send also waits for the first sync instead of refusing', async () => {
-  const st = { email: 'me@example.com', users: [], synced: false, syncAfter: 3, later: [ME] };
+test('send waits for the first sync instead of refusing', async () => {
+  // The device list shows up 1.5 s after the command starts, well after send first asks for it.
+  const st = { email: 'me@example.com', users: [], synced: false, syncAt: Date.now() + 1e9, later: [ME] };
   const { home, sock, done } = await setup(st);
   writeFileSync(join(home, 'a.txt'), 'hi');
+  st.syncAt = Date.now() + 1500;
   const r = await blip(home, sock, ['send', 'a.txt', '--to', 'Pixel 8']);
   done();
   assert.equal(r.code, 0, r.err);
   assert.equal(st.events[0].name, 'TransferCreateRequested');
+  assert.equal(str(fields(st.events[0].ev[1].value)[1]), 'dev-phone');
+});
+
+test('a device list from before the sync is used only for an exact device id', async () => {
+  const twin = { id: 'user-me', self: true, devices: [...ME.devices, { id: 'dev-phone-2', name: 'Pixel 8' }] };
+  // Before the sync the engine still has an old list with one Pixel 8; the synced list has two.
+  const st = { email: 'me@example.com', users: [ME], synced: false, syncAt: Date.now() + 1e9, later: [twin] };
+  const { home, sock, done } = await setup(st);
+  writeFileSync(join(home, 'a.txt'), 'hi');
+  const env = { BLIP_TIMEOUT_S: '1' };
+  const list = await blip(home, sock, ['devices'], env);
+  const byName = await blip(home, sock, ['send', 'a.txt', '--to', 'Pixel 8'], env);
+  const onlyOne = await blip(home, sock, ['send', 'a.txt'], env);
+  const byId = await blip(home, sock, ['send', 'a.txt', '--to', 'dev-phone'], env);
+  const created = st.events.filter((e) => e.name === 'TransferCreateRequested').length;
+  st.syncAt = 0;                                                       // now the sync arrives
+  const synced = await blip(home, sock, ['send', 'a.txt', '--to', 'Pixel 8'], env);
+  done();
+  assert.equal(list.code, 0); assert.match(list.err, /note: Blip has not finished syncing your devices .* may be out of date/);
+  assert.equal(list.out, 'server (this device)\tdev-here\nPixel 8\tdev-phone\n');
+  for (const r of [byName, onlyOne]) { assert.equal(r.code, 1, r.err); assert.match(r.err, /has not finished syncing .*pass the device id from blip devices with --to/); }
+  assert.equal(byId.code, 0, byId.err);
+  assert.equal(created, 1);
+  assert.equal(synced.code, 1); assert.match(synced.err, /ambiguous device "Pixel 8"/);
 });
 
 test('folder and auto-accept show the engine\'s settings and send changes', async () => {
