@@ -220,16 +220,30 @@ async function signedIn() {
   return me;
 }
 
-async function ownDevices() {
-  const users = fields((await getState()).find((f) => f.tag === 500)?.value ?? Buffer.alloc(0));
+function devicesIn(st) {
+  const users = fields(st.find((f) => f.tag === 500)?.value ?? Buffer.alloc(0));
   const self = entries(users, 1).filter(({ val }) => fields(val).find((f) => f.tag === 10)?.value === 1); // is_self
   const out = self.flatMap(({ key: userId, val }) => entries(fields(val), 7).map(({ val: dev }) => {
     const d = fields(dev); const g = (t) => d.find((f) => f.tag === t);
     return { userId, deviceId: str(g(1)), name: str(g(3)), isThis: g(6)?.value === 1 };
   }));
   // Cross-check the reverse-engineered is_self flag: exactly one user is you, and it owns this device.
-  if (self.length !== 1 || !out.some((d) => d.isThis)) die("can't tell which devices are yours (is this a supported Blip version?)");
-  return out;
+  return self.length === 1 && out.some((d) => d.isThis) ? out : null;
+}
+// State.messaging (tag 400) initial_sync_complete (3): the engine has had its first sync with Blip's server.
+const synced = (st) => fields(st.find((f) => f.tag === 400)?.value ?? Buffer.alloc(0)).find((f) => f.tag === 3)?.value === 1;
+// Right after sign-in the device list only arrives with that first sync, so wait for it before giving up.
+async function ownDevices() {
+  const seconds = timeout > 0 && Number.isFinite(timeout) ? Math.min(timeout, 15) : 15;
+  const deadline = Date.now() + seconds * 1000;
+  for (;;) {
+    const st = await getState();
+    const out = devicesIn(st);
+    if (out) return out;
+    if (synced(st)) die("can't tell which devices are yours (is this a supported Blip version?)");
+    if (Date.now() > deadline) die(`Blip has not loaded your devices from its server after ${seconds} s (is this machine online?). Try again in a moment`);
+    await sleep(500);
+  }
 }
 async function transfers() {
   return entries(await getState(), 600).map(({ key, val }) => {

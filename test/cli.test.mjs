@@ -30,6 +30,7 @@ function encodeState(st) {
   const users = (st.users ?? []).map((u) => ld(1, Buffer.concat([s(1, u.id), ld(2, Buffer.concat([vi(10, u.self ? 1 : 0),
     ...u.devices.map((d) => ld(7, Buffer.concat([s(1, d.id), ld(2, Buffer.concat([s(1, d.id), s(3, d.name), vi(6, d.here ? 1 : 0)]))])))]))])));
   parts.push(ld(500, Buffer.concat(users)));
+  if (st.synced ?? true) parts.push(ld(400, vi(3, 1)));          // Messaging.initial_sync_complete
   if (st.config) parts.push(ld(100, Buffer.concat([vi(2, st.config.autoAcceptDisabled ? 1 : 0), ...(st.config.folder ? [s(4, st.config.folder)] : [])])));
   for (const t of st.transfers) parts.push(ld(600, Buffer.concat([s(1, t.id), ld(2, Buffer.concat([vi(700, t.direction ?? 2), vi(800, t.status), ...(t.saved ? [s(501, t.saved)] : []), ...(t.err ? [ld(600, s(2, t.err))] : [])]))])));
   return ld(2, Buffer.concat(parts));
@@ -70,6 +71,8 @@ async function fakeBlip(dir, st, { garbage = false } = {}) {
         if (name === 'RegistrationRequested' && str(ev[0]) === '123456') st.email = 'me@example.com';
         return c.write(Buffer.concat([frame(2, 1, Buffer.alloc(0)), frame(6, 2, Buffer.alloc(0))]));
       }
+      st.reads = (st.reads ?? 0) + 1;
+      if (st.syncAfter && st.reads >= st.syncAfter) { st.users = st.later; st.synced = true; }
       if (st.failing) return c.write(frame(3, 2, Buffer.concat([Buffer.alloc(8), Buffer.from('boom')])));
       c.write(Buffer.concat([frame(2, 1, encodeState(st)), frame(6, 2, Buffer.alloc(0))]));
     });
@@ -654,6 +657,32 @@ test('decline checks its arguments before anything else', async () => {
   done();
   for (const r of [bare, offline]) { assert.equal(r.code, 2); assert.match(r.err, /usage: blip decline <id>/); }
   assert.equal(dir.code, 2); assert.match(dir.err, /--dir only goes with accept/);
+});
+
+test('devices waits for the first sync after sign-in, and fails clearly without it', async () => {
+  // Just after login the engine is signed in but has no device list until it syncs with Blip's server.
+  const st = { email: 'me@example.com', users: [], synced: false, syncAfter: 4, later: [ME, OTHER] };
+  const { home, sock, done } = await setup(st);
+  const late = await blip(home, sock, ['devices']);
+  Object.assign(st, { users: [], synced: false, syncAfter: 0 });
+  const never = await blip(home, sock, ['devices'], { BLIP_TIMEOUT_S: '1' });
+  Object.assign(st, { users: [OTHER], synced: true });
+  const wrong = await blip(home, sock, ['devices']);
+  done();
+  assert.equal(late.code, 0, late.err);
+  assert.equal(late.out, 'server (this device)\tdev-here\nPixel 8\tdev-phone\n');
+  assert.equal(never.code, 1); assert.match(never.err, /has not loaded your devices from its server after 1 s \(is this machine online\?\)/);
+  assert.equal(wrong.code, 1); assert.match(wrong.err, /can't tell which devices are yours \(is this a supported Blip version\?\)/);
+});
+
+test('send also waits for the first sync instead of refusing', async () => {
+  const st = { email: 'me@example.com', users: [], synced: false, syncAfter: 3, later: [ME] };
+  const { home, sock, done } = await setup(st);
+  writeFileSync(join(home, 'a.txt'), 'hi');
+  const r = await blip(home, sock, ['send', 'a.txt', '--to', 'Pixel 8']);
+  done();
+  assert.equal(r.code, 0, r.err);
+  assert.equal(st.events[0].name, 'TransferCreateRequested');
 });
 
 test('folder and auto-accept show the engine\'s settings and send changes', async () => {
