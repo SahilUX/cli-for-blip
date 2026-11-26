@@ -17,7 +17,7 @@ blip logout
 
 ## What you need
 
-- Linux with glibc on x86-64, or macOS on Apple Silicon. macOS support is a preview: native installation, email-code login, lifecycle and authenticated outgoing file and folder transfers are verified on macOS 27.0.1. Linux aarch64 and Intel macOS are experimental
+- Linux with glibc on x86-64, or macOS on Apple Silicon. macOS support is a preview: native installation, email-code login, lifecycle, authenticated outgoing file and folder transfers, and logout are verified on macOS 27.0.1. Linux aarch64 and Intel macOS are experimental
 - Node.js 22 or newer (`node --version` to check)
 - A C compiler (`cc`), `git`, and `curl` to install. Linux also needs `tar` and `sha256sum`. On Debian or Ubuntu: `sudo apt install build-essential git curl tar coreutils`
 - On macOS, install the Xcode Command Line Tools with `xcode-select --install` if needed. The installer also uses the system `unzip`, `shasum`, and `codesign` commands
@@ -154,7 +154,7 @@ If the device is still listed, remove it there with **Remove this device**. You 
 
 The proof is only as good as the engine's own check. The engine counts a reply as success when it has status 200, also after following a 301, 302, or 303 redirect, and doesn't look at its content.
 
-`login` and `logout` follow Blip's sign-in flow through RPC. Email-code login has been verified on macOS and Linux x86-64. On November 26, 2026, login, a restart that kept the session, and logout were verified on Linux x86-64 with a real account, at commit 98546cb of pull request #9. `logout` exited with code 0, and the device was gone from the account. The cases where removal fails were tested only with the Linux engine against a fake server. Logout on macOS is still untested. If the macOS engine logs it differently, `logout` exits with code 4 even when the removal worked.
+`login` and `logout` follow Blip's sign-in flow through RPC. Email-code login has been verified on macOS and Linux x86-64. On November 26, 2026, login, a restart that kept the session, and logout were verified on Linux x86-64 with a real account, at commit 98546cb of pull request #9. `logout` exited with code 0, and the device was gone from the account. The same day, logout was verified on macOS 27.0.1 with a real account, at commit cb7b2d0: exit code 0, and the device was gone from the account. The cases where removal fails were tested only against a fake server, with both the Linux and the macOS engine. In the macOS test, `blip devices` run straight after `login` stopped with `can't tell which devices are yours`, most likely because the device list hadn't synced yet: it worked after a restart. `devices` and `send` now wait for that sync. The wait is tested against a fake engine but not yet with a real account.
 
 ## The background app
 
@@ -229,7 +229,7 @@ A folder goes with everything in it, including hidden files such as `.git` or `.
 blip send another.pdf
 ```
 
-The device is picked in this order: `--to` (or `-t`), then `BLIP_TO`, then the remembered device in the platform config file, then your only other device if you have just one. An empty value counts as unset. Without any of these, `send` exits with code 2 and asks for `--to`.
+The device is picked in this order: `--to` (or `-t`), then `BLIP_TO`, then the remembered device in the platform config file, then your only other device if you have just one. An empty value counts as unset. Without any of these, `send` exits with code 2 and asks for `--to`. The only-device fallback needs a synced device list (see [Blip runs but doesn't answer](#blip-runs-but-doesnt-answer)).
 
 A few rules about the device:
 
@@ -299,7 +299,7 @@ Control characters in names, ids, and error texts from Blip are printed as `\uXX
 | Variable | Default | Effect |
 |---|---|---|
 | `BLIP_TO` | | Device `send` uses when there is no `--to` |
-| `BLIP_TIMEOUT_S` | `300` | Seconds `send` waits for completion before exiting with code 3. Must be a positive number. A smaller value also shortens the waits of `accept`, `decline`, and `logout` |
+| `BLIP_TIMEOUT_S` | `300` | Seconds `send` waits for completion before exiting with code 3. Must be a positive number. A smaller value also shortens the waits of `accept`, `decline`, `logout`, and the device-list wait of `devices` and `send` |
 | `BLIP_DEVICE_NAME` | hostname up to the first dot | Device name `login` registers, unless `--name` is given |
 | `BLIP_APP` | `~/.local/lib/blip-cli/blip-core` | Path of the native host executable, which takes library, cache directory, and data directory arguments. On macOS it must also answer `--identity <pid>`, as the installed `blip-core` does |
 | `BLIP_LIB` | See platform paths | Path of the native library or intact Mac framework binary |
@@ -350,6 +350,14 @@ The app log reports native loading errors, including `could not load Blip core` 
 A bare `timeout` error means the socket accepted the connection but the app did not answer within 15 seconds. Run `blip stop`, then try again.
 
 `unexpected reply from Blip (is this a supported Blip version?)` and `can't tell which devices are yours (is this a supported Blip version?)` mean the app answered with something `blip` doesn't understand. This usually follows a Blip update. See [Caveats](#caveats).
+
+Right after `blip login` or a start, the engine's device list is missing or out of date until its first sync with Blip's server. `devices` and `send` wait for that sync for up to 15 seconds (or `BLIP_TIMEOUT_S`, if smaller). For `send` this wait comes first, before the transfer and its own `BLIP_TIMEOUT_S` wait, so the two can add up. If the sync doesn't come:
+
+- With no device list at all, both stop with `Blip has not loaded your devices from its server after 15 s (is this machine online?)` and exit code 1.
+- With a list from before the sync, `devices` prints it after a `note:` on stderr saying it may be out of date. `send` uses it only when the device you name, with `--to`, `BLIP_TO` or the remembered device, is a device id from `blip devices`. A device name stops with exit code 1, because a device with the same name may be missing from the old list. With no device named, `send` doesn't fall back to your only other device and exits with code 2, asking for `--to`.
+- If the engine says it has synced but the list still doesn't name this device, the error is `can't tell which devices are yours` at the end of the wait.
+
+It isn't known whether the engine clears its sync flag when one account signs out and another signs in within one run. So `blip` doesn't rely on the flag alone: it also needs a list that names this device. On a Linux engine that had been running and signed in for a long time, `devices` found the flag set and answered at once, with no note. Check the network and try again.
 
 `refusing <socket>: it is not a socket you own` means the path in `BLIP_SOCK` (or the default path) is not a socket, or another user owns it.
 
